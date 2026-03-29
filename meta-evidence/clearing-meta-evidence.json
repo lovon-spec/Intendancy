@@ -1,0 +1,62 @@
+{
+  "title": "Remove an entry from Intendhub Registry",
+  "description": "Someone requested to remove an agent skill, plugin, or convention from the Intendhub Registry.",
+  "question": "Does this entry violate the Intendhub listing policy and should it be removed?",
+  "rulingOptions": {
+    "titles": ["Yes, Remove It", "No, Don't Remove It"],
+    "descriptions": [
+      "Select this if the entry violates the listing policy or should be removed for the reasons stated in the evidence.",
+      "Select this if the entry still complies with the listing policy and should remain in the registry."
+    ]
+  },
+  "category": "Curated Lists",
+  "fileURI": "/ipfs/TODO_LISTING_POLICY_CID/listing-policy.pdf",
+  "dynamicScriptURI": "",
+  "metadata": {
+    "tcrTitle": "Intendhub Registry",
+    "tcrDescription": "A curated registry of AI agent skills, plugins, and conventions verified through Kleros dispute resolution.",
+    "columns": [
+      {
+        "label": "Name",
+        "description": "Human-readable name of the entry.",
+        "type": "text",
+        "isIdentifier": true
+      },
+      {
+        "label": "Source Type",
+        "description": "Source type. Must be 'git'.",
+        "type": "text",
+        "isIdentifier": false
+      },
+      {
+        "label": "Source Locator",
+        "description": "Git repository URL @ full commit SHA-1 (e.g., https://github.com/org/repo@abc123...).",
+        "type": "text",
+        "isIdentifier": true
+      },
+      {
+        "label": "Category",
+        "description": "Entry type: skill, plugin, or convention.",
+        "type": "text",
+        "isIdentifier": true
+      },
+      {
+        "label": "Runtimes",
+        "description": "Comma-separated supported runtimes (e.g., claude_code,cursor,generic).",
+        "type": "text",
+        "isIdentifier": false
+      },
+      {
+        "label": "Description",
+        "description": "Brief description of what this entry does.",
+        "type": "long text",
+        "isIdentifier": false
+      }
+    ],
+    "itemName": "entry",
+    "itemNamePlural": "entries",
+    "requireRemovalEvidence": true,
+    "isTCRofTCRs": false,
+    "relTcrDisabled": true
+  }
+}
