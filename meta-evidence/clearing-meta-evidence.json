@@ -24,7 +24,7 @@
       },
       {
         "label": "Source Type",
-        "description": "Source type. Must be 'git'.",
+        "description": "Source type: git, npm, pypi, docker, or ipfs.",
         "type": "text",
         "isIdentifier": false
       },

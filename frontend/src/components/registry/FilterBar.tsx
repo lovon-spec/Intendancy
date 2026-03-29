@@ -12,6 +12,7 @@ interface FilterBarProps {
 const STATUS_OPTIONS: { value: string; label: string }[] = [
   { value: "", label: "All Statuses" },
   { value: "registered", label: "Registered" },
+  { value: "long-standing", label: "Long-standing" },
   { value: "pending-registration", label: "Pending" },
   { value: "disputed", label: "Disputed" },
   { value: "flagged", label: "Flagged" },

@@ -1,27 +1,35 @@
 import type { ItemFields as Fields } from "../../types";
-import { parseSourceLocator } from "../../lib/formatters";
+import { SOURCE_TYPE_CONFIG, type SourceType } from "../../config/registry";
 import { CategoryBadge } from "../registry/CategoryBadge";
 import { RuntimeTags } from "../registry/RuntimeTags";
 
+const SOURCE_TYPE_LABELS: Record<string, string> = {
+  git: "Git Repository",
+  npm: "npm Package",
+  pypi: "PyPI Package",
+  docker: "Docker Image",
+  ipfs: "IPFS",
+};
+
 export function ItemFieldsDisplay({ fields }: { fields: Fields }) {
-  const source = parseSourceLocator(fields.sourceLocator);
+  const stConfig = SOURCE_TYPE_CONFIG[fields.sourceType as SourceType];
+  const url = stConfig?.toUrl(fields.sourceLocator);
 
   return (
     <div className="space-y-3">
       <div>
-        <dt className="text-xs font-medium text-gray-500 uppercase">Source</dt>
+        <dt className="text-xs font-medium text-gray-500 uppercase">
+          Source ({SOURCE_TYPE_LABELS[fields.sourceType] ?? fields.sourceType})
+        </dt>
         <dd className="mt-0.5">
-          {source ? (
+          {url ? (
             <div>
-              <a href={source.repoUrl} target="_blank" rel="noopener noreferrer" className="text-sm text-blue-600 hover:underline">
-                {source.repoUrl}
+              <a href={url} target="_blank" rel="noopener noreferrer" className="text-sm text-blue-600 hover:underline break-all">
+                {fields.sourceLocator}
               </a>
-              <div className="font-mono text-xs text-gray-500 mt-0.5">
-                @ {source.commitHash}
-              </div>
             </div>
           ) : (
-            <span className="text-sm font-mono">{fields.sourceLocator}</span>
+            <span className="text-sm font-mono break-all">{fields.sourceLocator}</span>
           )}
         </dd>
       </div>

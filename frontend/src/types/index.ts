@@ -15,6 +15,7 @@ export type Party = (typeof Party)[keyof typeof Party];
 
 export type DisplayStatus =
   | "registered"
+  | "long-standing"
   | "pending-registration"
   | "pending-removal"
   | "disputed"

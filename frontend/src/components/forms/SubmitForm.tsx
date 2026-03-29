@@ -1,13 +1,11 @@
 import { useState } from "react";
 import { useAccount } from "wagmi";
-import { CATEGORIES, RUNTIMES } from "../../config/registry";
+import { CATEGORIES, RUNTIMES, SOURCE_TYPES, SOURCE_TYPE_CONFIG, type SourceType } from "../../config/registry";
 import { useRegistryParams } from "../../hooks/useRegistryParams";
 import { useSubmitItem } from "../../hooks/useSubmitItem";
 import { DepositInfo } from "./DepositInfo";
 import { TransactionStatus } from "../wallet/TransactionStatus";
 import type { ItemFields } from "../../types";
-
-const SOURCE_LOCATOR_REGEX = /^https?:\/\/.+@[0-9a-f]{40}$/i;
 
 export function SubmitForm() {
   const { isConnected } = useAccount();
@@ -15,11 +13,14 @@ export function SubmitForm() {
   const { submit, hash, isPending, isConfirming, isSuccess, error, reset } = useSubmitItem();
 
   const [name, setName] = useState("");
+  const [sourceType, setSourceType] = useState<SourceType>("git");
   const [sourceLocator, setSourceLocator] = useState("");
   const [category, setCategory] = useState<string>("skill");
   const [selectedRuntimes, setSelectedRuntimes] = useState<string[]>(["generic"]);
   const [description, setDescription] = useState("");
   const [validationError, setValidationError] = useState("");
+
+  const stConfig = SOURCE_TYPE_CONFIG[sourceType];
 
   function toggleRuntime(rt: string) {
     setSelectedRuntimes((prev) =>
@@ -33,8 +34,9 @@ export function SubmitForm() {
     reset();
 
     if (!name.trim()) { setValidationError("Name is required"); return; }
-    if (!SOURCE_LOCATOR_REGEX.test(sourceLocator)) {
-      setValidationError("Source Locator must be a URL followed by @ and a 40-char hex commit hash");
+    if (!sourceLocator.trim()) { setValidationError("Source Locator is required"); return; }
+    if (!stConfig.validate(sourceLocator.trim())) {
+      setValidationError(`Invalid ${stConfig.label} locator. ${stConfig.helpText}`);
       return;
     }
     if (selectedRuntimes.length === 0) { setValidationError("Select at least one runtime"); return; }
@@ -43,7 +45,7 @@ export function SubmitForm() {
 
     const fields: ItemFields = {
       name: name.trim(),
-      sourceType: "git",
+      sourceType,
       sourceLocator: sourceLocator.trim(),
       category: category as ItemFields["category"],
       runtimes: selectedRuntimes.join(","),
@@ -67,15 +69,28 @@ export function SubmitForm() {
       </div>
 
       <div>
+        <label className="block text-sm font-medium text-gray-700 mb-1">Source Type</label>
+        <select
+          value={sourceType}
+          onChange={(e) => { setSourceType(e.target.value as SourceType); setSourceLocator(""); }}
+          className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm bg-white"
+        >
+          {SOURCE_TYPES.map((st) => (
+            <option key={st} value={st}>{SOURCE_TYPE_CONFIG[st].label}</option>
+          ))}
+        </select>
+      </div>
+
+      <div>
         <label className="block text-sm font-medium text-gray-700 mb-1">Source Locator</label>
         <input
           type="text"
           value={sourceLocator}
           onChange={(e) => setSourceLocator(e.target.value)}
-          placeholder="https://github.com/org/repo@a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+          placeholder={stConfig.placeholder}
           className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
         />
-        <p className="text-xs text-gray-500 mt-1">Any public git repository URL followed by @ and the full 40-character SHA-1 commit hash</p>
+        <p className="text-xs text-gray-500 mt-1">{stConfig.helpText}</p>
       </div>
 
       <div>

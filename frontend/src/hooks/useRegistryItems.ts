@@ -45,9 +45,11 @@ export function useRegistryItems(): {
     query: { enabled: itemIDs.length > 0 },
   });
 
-  // Step 4: get latest request info for items that are pending/clearing (need requester)
-  const pendingItemIndices: number[] = [];
-  const requestContracts: Array<{
+  // Step 4: fetch request info where needed:
+  // - Pending/Clearing items: latest request (for disputed flag + requester)
+  // - Registered items: first request (for submissionTime → long-standing badge)
+  const extraRequestIndices: number[] = [];
+  const extraRequestContracts: Array<{
     address: `0x${string}`;
     abi: typeof generalizedTcrAbi;
     functionName: "getRequestInfo";
@@ -58,34 +60,43 @@ export function useRegistryItems(): {
     infoResults.forEach((info, i) => {
       if (info.status !== "success") return;
       const [, status, numRequests] = info.result as [string, number, bigint];
-      if (
-        (status === ItemStatus.RegistrationRequested || status === ItemStatus.ClearingRequested) &&
-        numRequests > 0n
-      ) {
-        pendingItemIndices.push(i);
-        requestContracts.push({
+      if (numRequests === 0n) return;
+
+      if (status === ItemStatus.RegistrationRequested || status === ItemStatus.ClearingRequested) {
+        // Latest request for pending items
+        extraRequestIndices.push(i);
+        extraRequestContracts.push({
           ...contract,
           functionName: "getRequestInfo",
           args: [itemIDs[i], numRequests - 1n],
+        });
+      } else if (status === ItemStatus.Registered) {
+        // First request for registered items (registration time)
+        extraRequestIndices.push(i);
+        extraRequestContracts.push({
+          ...contract,
+          functionName: "getRequestInfo",
+          args: [itemIDs[i], 0n],
         });
       }
     });
   }
 
-  const { data: requestResults } = useReadContracts({
-    contracts: requestContracts,
-    query: { enabled: requestContracts.length > 0 },
+  const { data: extraResults } = useReadContracts({
+    contracts: extraRequestContracts,
+    query: { enabled: extraRequestContracts.length > 0 },
   });
 
-  // Build request info lookup
-  const requestInfoMap = new Map<number, { disputed: boolean; requester: `0x${string}` }>();
-  if (requestResults) {
-    requestResults.forEach((r, i) => {
+  // Build lookup: item index → extra info
+  const extraInfoMap = new Map<number, { disputed: boolean; requester: `0x${string}`; submissionTime: bigint }>();
+  if (extraResults) {
+    extraResults.forEach((r, i) => {
       if (r.status !== "success") return;
       const result = r.result as readonly [boolean, bigint, bigint, boolean, readonly [`0x${string}`, `0x${string}`, `0x${string}`], bigint, number, string, string, bigint];
-      requestInfoMap.set(pendingItemIndices[i], {
+      extraInfoMap.set(extraRequestIndices[i], {
         disputed: result[0],
         requester: result[4][1],
+        submissionTime: result[2],
       });
     });
   }
@@ -98,11 +109,12 @@ export function useRegistryItems(): {
       const [rawData, status, numRequests] = info.result as [`0x${string}`, number, bigint];
       try {
         const fields = decodeItem(rawData);
-        const reqInfo = requestInfoMap.get(i);
+        const extra = extraInfoMap.get(i);
         const displayStatus = getDisplayStatus(
           status as ItemStatus,
-          reqInfo?.disputed ?? false,
-          reqInfo?.requester,
+          extra?.disputed ?? false,
+          extra?.requester,
+          status === ItemStatus.Registered ? extra?.submissionTime : undefined,
         );
         items.push({
           itemID: itemIDs[i],

@@ -36,27 +36,18 @@ contract IntendhubRegistryTest is Test {
     // Stake multipliers: shared=100%, winner=100%, loser=200% (basis points)
     uint256[3] stakeMultipliers = [uint256(10000), uint256(10000), uint256(20000)];
 
-    // --- Test item data (raw bytes, encoding is a frontend concern) ---
-    // Represents: Name="test-skill", SourceType="git",
-    // SourceLocator="https://github.com/test/repo@abc123", Category="skill",
-    // Runtimes="claude_code,generic", Description="A test skill"
-    bytes constant TEST_ITEM_1 = abi.encodePacked(
-        "test-skill",
-        "|git",
-        "|https://github.com/test/repo@abc1230000000000000000000000000000000000",
-        "|skill",
-        "|claude_code,generic",
-        "|A test skill for integration testing"
-    );
+    // --- Test item data (RLP-encoded, matching frontend encoder.ts) ---
+    // Item 1: Name="test-skill", SourceType="git",
+    // SourceLocator="https://github.com/test/repo@abc1230000000000000000000000000000000000",
+    // Category="skill", Runtimes="claude_code,generic",
+    // Description="A test skill for integration testing"
+    bytes constant TEST_ITEM_1 = hex"f8958a746573742d736b696c6c83676974b84568747470733a2f2f6769746875622e636f6d2f746573742f7265706f406162633132333030303030303030303030303030303030303030303030303030303030303030303085736b696c6c93636c617564655f636f64652c67656e65726963a441207465737420736b696c6c20666f7220696e746567726174696f6e2074657374696e67";
 
-    bytes constant TEST_ITEM_2 = abi.encodePacked(
-        "another-skill",
-        "|git",
-        "|https://github.com/other/repo@def4560000000000000000000000000000000000",
-        "|convention",
-        "|cursor,generic",
-        "|A convention file for testing"
-    );
+    // Item 2: Name="another-skill", SourceType="npm",
+    // SourceLocator="@test/conventions@1.0.0#sha512-abcdef",
+    // Category="convention", Runtimes="cursor,generic",
+    // Description="A convention file for testing"
+    bytes constant TEST_ITEM_2 = hex"f8708d616e6f746865722d736b696c6c836e706da540746573742f636f6e76656e74696f6e7340312e302e30237368613531322d6162636465668a636f6e76656e74696f6e8e637572736f722c67656e657269639d4120636f6e76656e74696f6e2066696c6520666f722074657374696e67";
 
     // --- Events we check ---
     // Note: we use the raw event signatures since the contract is 0.5.x compiled

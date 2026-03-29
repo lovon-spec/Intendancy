@@ -51,10 +51,12 @@ export function useItemDetail(itemID: `0x${string}`) {
     });
 
   const latestRequest = requests.length > 0 ? requests[requests.length - 1] : undefined;
+  const firstRequest = requests.length > 0 ? requests[0] : undefined;
   const displayStatus: DisplayStatus = getDisplayStatus(
     status as ItemStatus,
     latestRequest?.disputed ?? false,
     latestRequest?.parties[1],
+    status === ItemStatus.Registered ? firstRequest?.submissionTime : undefined,
   );
 
   return {
