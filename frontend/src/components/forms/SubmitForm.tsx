@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useAccount } from "wagmi";
-import { CATEGORIES, RUNTIMES, SOURCE_TYPES, SOURCE_TYPE_CONFIG, type SourceType } from "../../config/registry";
+import { CATEGORIES, SUGGESTED_RUNTIMES as RUNTIMES, SOURCE_TYPES, SOURCE_TYPE_CONFIG, type SourceType } from "../../config/registry";
 import { useRegistryParams } from "../../hooks/useRegistryParams";
 import { useSubmitItem } from "../../hooks/useSubmitItem";
 import { DepositInfo } from "./DepositInfo";
@@ -17,6 +17,7 @@ export function SubmitForm() {
   const [sourceLocator, setSourceLocator] = useState("");
   const [category, setCategory] = useState<string>("skill");
   const [selectedRuntimes, setSelectedRuntimes] = useState<string[]>(["generic"]);
+  const [customRuntime, setCustomRuntime] = useState("");
   const [description, setDescription] = useState("");
   const [validationError, setValidationError] = useState("");
 
@@ -26,6 +27,14 @@ export function SubmitForm() {
     setSelectedRuntimes((prev) =>
       prev.includes(rt) ? prev.filter((r) => r !== rt) : [...prev, rt]
     );
+  }
+
+  function addCustomRuntime() {
+    const rt = customRuntime.trim().toLowerCase().replace(/\s+/g, "_");
+    if (rt && !selectedRuntimes.includes(rt)) {
+      setSelectedRuntimes((prev) => [...prev, rt]);
+    }
+    setCustomRuntime("");
   }
 
   function handleSubmit(e: React.FormEvent) {
@@ -108,7 +117,7 @@ export function SubmitForm() {
 
       <div>
         <label className="block text-sm font-medium text-gray-700 mb-1">Supported Runtimes</label>
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap gap-2 mb-2">
           {RUNTIMES.map((rt) => (
             <button
               key={rt}
@@ -124,6 +133,39 @@ export function SubmitForm() {
             </button>
           ))}
         </div>
+        {selectedRuntimes.filter((rt) => !RUNTIMES.includes(rt as typeof RUNTIMES[number])).length > 0 && (
+          <div className="flex flex-wrap gap-2 mb-2">
+            {selectedRuntimes.filter((rt) => !RUNTIMES.includes(rt as typeof RUNTIMES[number])).map((rt) => (
+              <button
+                key={rt}
+                type="button"
+                onClick={() => toggleRuntime(rt)}
+                className="px-3 py-1 rounded-full text-xs border bg-blue-100 border-blue-400 text-blue-800 transition-colors"
+              >
+                {rt} &times;
+              </button>
+            ))}
+          </div>
+        )}
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={customRuntime}
+            onChange={(e) => setCustomRuntime(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addCustomRuntime(); } }}
+            placeholder="Add custom runtime..."
+            className="flex-1 px-3 py-1.5 border border-gray-300 rounded-md text-xs focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
+          <button
+            type="button"
+            onClick={addCustomRuntime}
+            disabled={!customRuntime.trim()}
+            className="px-3 py-1.5 text-xs font-medium text-gray-700 border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50"
+          >
+            Add
+          </button>
+        </div>
+        <p className="text-xs text-gray-500 mt-1">Click suggestions above or type a custom runtime name</p>
       </div>
 
       <div>

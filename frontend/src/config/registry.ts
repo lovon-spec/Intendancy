@@ -98,7 +98,7 @@ export const SOURCE_TYPE_CONFIG: Record<SourceType, SourceTypeConfig> = {
   },
 };
 
-export const RUNTIMES = [
+export const SUGGESTED_RUNTIMES = [
   "claude_code",
   "openclaw",
   "cursor",
