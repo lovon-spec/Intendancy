@@ -52,9 +52,9 @@ The Source Locator must use the correct format for the declared Source Type and 
 - **docker**: The image and digest must be pullable from a public registry
 - **ipfs**: The CID must be retrievable from IPFS gateways
 
-### 3. Correct Category
+### 3. Correct Category and Spec Compliance
 The Category must accurately reflect the entry type:
-- `skill` — Must contain a valid SKILL.md file with YAML frontmatter (`name` and `description` required). Skills provide invocable capabilities, not project instructions.
+- `skill` — Must be a valid skill per the Agent Skills specification (agentskills.io/specification). This means: a directory containing a SKILL.md with YAML frontmatter (`name` and `description` required), no unknown frontmatter fields, `name` in kebab-case matching the directory name, `description` under 1024 characters. The entry must pass validation by the `skills-ref` reference validator. Skills provide invocable capabilities, not project instructions.
 - `plugin` — Must contain a plugin manifest or bundle structure (e.g., `plugin.json`, `marketplace.json`).
 - `convention` — Must contain a project-level instruction file (AGENTS.md, CLAUDE.md, .cursorrules, etc.). Conventions provide project context and coding standards, not invocable capabilities. A convention is NOT a skill — if the entry has a SKILL.md with frontmatter, it should be categorized as `skill`.
 
