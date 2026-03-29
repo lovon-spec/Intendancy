@@ -72,10 +72,10 @@ export function SubmitForm() {
           type="text"
           value={sourceLocator}
           onChange={(e) => setSourceLocator(e.target.value)}
-          placeholder="https://github.com/org/repo@abc123..."
+          placeholder="https://github.com/org/repo@a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
           className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
         />
-        <p className="text-xs text-gray-500 mt-1">Git repository URL followed by @ and the full 40-character commit hash</p>
+        <p className="text-xs text-gray-500 mt-1">Any public git repository URL followed by @ and the full 40-character SHA-1 commit hash</p>
       </div>
 
       <div>

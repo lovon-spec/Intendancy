@@ -12,6 +12,7 @@ export function Header() {
           <nav className="flex items-center gap-4">
             <Link to="/" className="text-sm text-gray-600 hover:text-gray-900">Registry</Link>
             <Link to="/submit" className="text-sm text-gray-600 hover:text-gray-900">Submit</Link>
+            <Link to="/policy" className="text-sm text-gray-600 hover:text-gray-900">Listing Policy</Link>
           </nav>
         </div>
         <ConnectButton />

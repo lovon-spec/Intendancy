@@ -6,6 +6,7 @@ import { Layout } from "./components/layout/Layout";
 import { RegistryPage } from "./pages/RegistryPage";
 import { ItemPage } from "./pages/ItemPage";
 import { SubmitPage } from "./pages/SubmitPage";
+import { PolicyPage } from "./pages/PolicyPage";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -26,6 +27,7 @@ export default function App() {
               <Route path="/" element={<RegistryPage />} />
               <Route path="/item/:itemId" element={<ItemPage />} />
               <Route path="/submit" element={<SubmitPage />} />
+              <Route path="/policy" element={<PolicyPage />} />
             </Route>
           </Routes>
         </BrowserRouter>

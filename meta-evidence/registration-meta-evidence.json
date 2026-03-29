@@ -30,7 +30,7 @@
       },
       {
         "label": "Source Locator",
-        "description": "Git repository URL @ full commit SHA-1 (e.g., https://github.com/org/repo@abc123...).",
+        "description": "Any public git repository URL @ full 40-char commit SHA-1 (e.g., https://github.com/org/repo@a1b2c3...).",
         "type": "text",
         "isIdentifier": true
       },

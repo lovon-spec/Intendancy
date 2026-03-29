@@ -10,6 +10,8 @@ export function SubmitPage() {
         <p className="text-sm text-gray-500 mt-1">
           Submit an AI agent skill, plugin, or convention to the registry.
           A deposit is required and will be refunded if the entry is accepted.
+          Your submission must comply with the{" "}
+          <Link to="/policy" className="text-blue-600 hover:underline">listing policy</Link>.
         </p>
       </div>
       <div className="border border-gray-200 rounded-lg p-5">
