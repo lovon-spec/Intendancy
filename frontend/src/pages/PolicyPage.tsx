@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 const POLICY_URL = import.meta.env.VITE_POLICY_URL || "/listing-policy.md";
 
@@ -34,7 +35,7 @@ export function PolicyPage() {
 
       {content && (
         <div className="mt-4 prose prose-sm prose-gray max-w-none [&_h1]:text-2xl [&_h1]:font-bold [&_h1]:mb-4 [&_h2]:text-lg [&_h2]:font-semibold [&_h2]:mt-6 [&_h2]:mb-2 [&_h3]:text-base [&_h3]:font-semibold [&_h3]:mt-4 [&_h3]:mb-1 [&_p]:text-sm [&_p]:text-gray-700 [&_p]:mb-3 [&_li]:text-sm [&_li]:text-gray-700 [&_ul]:mb-3 [&_ol]:mb-3 [&_table]:text-xs [&_table]:w-full [&_th]:text-left [&_th]:p-2 [&_th]:bg-gray-50 [&_td]:p-2 [&_td]:border-t [&_code]:text-xs [&_code]:bg-gray-100 [&_code]:px-1 [&_code]:py-0.5 [&_code]:rounded [&_strong]:text-gray-900">
-          <Markdown>{content}</Markdown>
+          <Markdown remarkPlugins={[remarkGfm]}>{content}</Markdown>
         </div>
       )}
 
