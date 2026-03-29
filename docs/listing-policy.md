@@ -10,9 +10,9 @@ This registry curates AI agent skills, plugins, and convention files that have b
 
 ## Entry Types
 
-- **skill** — A SKILL.md file (or directory) following the Agent Skills specification
-- **plugin** — A bundle of skills, hooks, MCP server configurations, and/or slash commands
-- **convention** — An AGENTS.md, CLAUDE.md, .cursorrules, or similar agent instruction file
+- **skill** — A SKILL.md file (or directory) following the Agent Skills specification (agentskills.io). Skills are invocable capabilities with YAML frontmatter (`name`, `description`) and markdown instructions that tell an agent *how to do something*. Skills written to the open standard work across 30+ agent runtimes.
+- **plugin** — A bundle of skills, hooks, MCP server configurations, and/or slash commands packaged for distribution (e.g., via `plugin.json` or `marketplace.json`).
+- **convention** — A project-level instruction file that tells agents *how a codebase works*: coding standards, build commands, file structure, boundaries. Examples: AGENTS.md (cross-tool), CLAUDE.md (Claude Code), .cursorrules (Cursor), .windsurf/rules/ (Windsurf), .roo/rules/ (Roo Code), CONVENTIONS.md (Aider). Conventions are NOT skills — they provide project context, not invocable capabilities.
 
 ## Required Fields
 
@@ -22,7 +22,7 @@ Each submission must include all of the following:
 2. **Source Type** — One of: `git`, `npm`, `pypi`, `docker`, `ipfs`
 3. **Source Locator** — An immutable identifier using the source registry's native format (see Source Types below)
 4. **Category** — One of: `skill`, `plugin`, `convention`
-5. **Runtimes** — Comma-separated list of supported agent runtimes (e.g., `claude_code,cursor,generic`). Use `generic` if the entry follows the cross-runtime Agent Skills specification without runtime-specific features.
+5. **Runtimes** — Comma-separated list of supported agent runtimes (e.g., `claude_code,cursor,generic`). For skills: use `generic` if the SKILL.md follows the open standard (agentskills.io) without runtime-specific extensions; use specific runtimes if it relies on runtime-specific features (e.g., Claude Code's `disable-model-invocation`, OpenClaw's `metadata.openclaw`). For conventions: list the runtimes the convention file format is designed for (e.g., `claude_code` for CLAUDE.md, `cursor` for .cursorrules). Use `generic` for AGENTS.md since it is the cross-tool convention standard.
 6. **Description** — A brief, accurate description of what the entry does
 
 ## Source Types
@@ -54,9 +54,9 @@ The Source Locator must use the correct format for the declared Source Type and 
 
 ### 3. Correct Category
 The Category must accurately reflect the entry type:
-- `skill` — Must contain a valid SKILL.md file with YAML frontmatter
-- `plugin` — Must contain a plugin manifest or bundle structure
-- `convention` — Must contain an agent instruction/convention file
+- `skill` — Must contain a valid SKILL.md file with YAML frontmatter (`name` and `description` required). Skills provide invocable capabilities, not project instructions.
+- `plugin` — Must contain a plugin manifest or bundle structure (e.g., `plugin.json`, `marketplace.json`).
+- `convention` — Must contain a project-level instruction file (AGENTS.md, CLAUDE.md, .cursorrules, etc.). Conventions provide project context and coding standards, not invocable capabilities. A convention is NOT a skill — if the entry has a SKILL.md with frontmatter, it should be categorized as `skill`.
 
 ### 4. Declared Runtimes
 The entry must actually work (or be designed to work) with each of the declared runtimes. Runtimes must not be listed speculatively.
