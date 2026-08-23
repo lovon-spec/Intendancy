@@ -1,0 +1,34 @@
+[package]
+name = "gnosis-anchor-spike"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Spike (Implementation Brief 0001): Gnosis finalized-state anchor via consensus light-client verification + EIP-1186 account/storage proofs against a Classic GTCR fixture. Non-production."
+
+# Deliberately its own workspace: the spike must not join any parent workspace.
+[workspace]
+
+[dependencies]
+# Consensus light-client verification core (generic over ConsensusSpec).
+# Pinned to the exact upstream revision inspected for this spike; see README + results doc.
+helios-consensus-core = { git = "https://github.com/a16z/helios", rev = "43a8c9f3cdda41a6f383c4db41d9a83f102638b1" }
+
+# Execution-side primitives/types; version aligned with the helios revision's own alloy
+# so that B256/Address unify across crates.
+alloy = { version = "1.0.37", features = ["rpc-types", "consensus", "rlp"] }
+# Merkle-Patricia proof verification; same feature set helios pins (helios requests
+# 0.9.1; the committed Cargo.lock resolves 0.9.5 for both — pinned here to match).
+alloy-trie = { version = "0.9.5", features = ["ethereum"] }
+
+tree_hash = "0.10.0"
+typenum = "1.17"
+thiserror = "2"
+
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+eyre = "0.6"
+
+[dev-dependencies]
+tempfile = "3"
