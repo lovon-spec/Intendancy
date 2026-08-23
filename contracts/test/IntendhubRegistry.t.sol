@@ -18,7 +18,7 @@ contract IntendhubRegistryTest is Test {
     address governor;
     address submitter;
     address challenger;
-    address guardian;
+    address remover;
 
     // --- Contracts ---
     MockArbitrator arbitrator;
@@ -37,25 +37,28 @@ contract IntendhubRegistryTest is Test {
     uint256[3] stakeMultipliers = [uint256(10000), uint256(10000), uint256(20000)];
 
     // --- Test item data (RLP-encoded, matching frontend encoder.ts) ---
-    // Item 1: Name="test-skill", SourceType="git",
-    // SourceLocator="https://github.com/test/repo@abc1230000000000000000000000000000000000",
-    // Category="skill", Runtimes="claude_code,generic",
-    // Description="A test skill for integration testing"
-    bytes constant TEST_ITEM_1 = hex"f8958a746573742d736b696c6c83676974b84568747470733a2f2f6769746875622e636f6d2f746573742f7265706f406162633132333030303030303030303030303030303030303030303030303030303030303030303085736b696c6c93636c617564655f636f64652c67656e65726963a441207465737420736b696c6c20666f7220696e746567726174696f6e2074657374696e67";
+    // Item 1: Name="test-skill",
+    // Description="A test skill for integration testing",
+    // TreeCID="bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi",
+    // Runtimes="claude_code,generic",
+    // Origin="https://github.com/test/repo@abc1230000000000000000000000000000000000",
+    // Reserved=""
+    bytes constant TEST_ITEM_1 =
+        hex"f8c98a746573742d736b696c6ca441207465737420736b696c6c20666f7220696e746567726174696f6e2074657374696e67b83b62616679626569676479727a74357366703775646d37687537367568377932366e6633656675796c71616266336f636c67747179353566627a646993636c617564655f636f64652c67656e65726963b84568747470733a2f2f6769746875622e636f6d2f746573742f7265706f406162633132333030303030303030303030303030303030303030303030303030303030303030303080";
+    bytes32 constant TEST_ITEM_1_ID = 0x2dee3e1382344dbb343b49182f8499eac0edaaa4795124d76e94aa672519ad6e;
 
-    // Item 2: Name="another-skill", SourceType="npm",
-    // SourceLocator="@test/conventions@1.0.0#sha512-abcdef",
-    // Category="convention", Runtimes="cursor,generic",
-    // Description="A convention file for testing"
-    bytes constant TEST_ITEM_2 = hex"f8708d616e6f746865722d736b696c6c836e706da540746573742f636f6e76656e74696f6e7340312e302e30237368613531322d6162636465668a636f6e76656e74696f6e8e637572736f722c67656e657269639d4120636f6e76656e74696f6e2066696c6520666f722074657374696e67";
+    // Item 2: Name="another-skill",
+    // Description="Another skill for testing",
+    // TreeCID="bafybeihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku",
+    // Runtimes="cursor,generic", Origin="", Reserved=""
+    bytes constant TEST_ITEM_2 =
+        hex"f8768d616e6f746865722d736b696c6c99416e6f7468657220736b696c6c20666f722074657374696e67b83b626166796265696864776463656667683464716b6a763637757a636d77376f6a6565367865647a6465746f6a757a6a657674656e78717576796b758e637572736f722c67656e657269638080";
+    bytes32 constant TEST_ITEM_2_ID = 0x9bcd337469e27ed7c7a3e2cab9e0df0b35a4d702f38ed1668d7b76b7ee378f77;
 
     // --- Events we check ---
     // Note: we use the raw event signatures since the contract is 0.5.x compiled
     event ItemSubmitted(
-        bytes32 indexed _itemID,
-        address indexed _submitter,
-        uint256 indexed _evidenceGroupID,
-        bytes _data
+        bytes32 indexed _itemID, address indexed _submitter, uint256 indexed _evidenceGroupID, bytes _data
     );
     event ItemStatusChange(
         bytes32 indexed _itemID,
@@ -74,13 +77,13 @@ contract IntendhubRegistryTest is Test {
         governor = makeAddr("governor");
         submitter = makeAddr("submitter");
         challenger = makeAddr("challenger");
-        guardian = makeAddr("guardian");
+        remover = makeAddr("remover");
 
         // Fund actors
         vm.deal(governor, 100 ether);
         vm.deal(submitter, 100 ether);
         vm.deal(challenger, 100 ether);
-        vm.deal(guardian, 100 ether);
+        vm.deal(remover, 100 ether);
 
         // Deploy mock arbitrator
         vm.prank(governor);
@@ -93,7 +96,7 @@ contract IntendhubRegistryTest is Test {
         vm.prank(governor);
         factory.deploy(
             address(arbitrator),
-            bytes(""),  // arbitratorExtraData (mock ignores it)
+            bytes(""), // arbitratorExtraData (mock ignores it)
             address(0), // connectedTCR (none for V1)
             "/ipfs/QmTest/registration-meta-evidence.json",
             "/ipfs/QmTest/clearing-meta-evidence.json",
@@ -130,6 +133,21 @@ contract IntendhubRegistryTest is Test {
     // ========================================================================
     // Submission tests
     // ========================================================================
+
+    function test_descriptorVectorsMatchFrontendEncoder() public pure {
+        assertEq(keccak256(TEST_ITEM_1), TEST_ITEM_1_ID);
+        assertEq(keccak256(TEST_ITEM_2), TEST_ITEM_2_ID);
+    }
+
+    function test_descriptorVectorsEndWithEmptyReservedField() public pure {
+        // RLP encodes the terminal empty string as 0x80. TEST_ITEM_2 ends in
+        // 0x80,0x80 because both Origin and Reserved are empty.
+        bytes memory item1 = TEST_ITEM_1;
+        bytes memory item2 = TEST_ITEM_2;
+        assertEq(uint8(item1[item1.length - 1]), uint8(0x80));
+        assertEq(uint8(item2[item2.length - 1]), uint8(0x80));
+        assertEq(uint8(item2[item2.length - 2]), uint8(0x80));
+    }
 
     function test_submitItem() public {
         bytes32 expectedItemID = keccak256(TEST_ITEM_1);
@@ -236,10 +254,7 @@ contract IntendhubRegistryTest is Test {
 
         // Challenge
         vm.prank(challenger);
-        registry.challengeRequest{value: challengeDeposit}(
-            itemID,
-            "/ipfs/QmEvidence/challenge-evidence.json"
-        );
+        registry.challengeRequest{value: challengeDeposit}(itemID, "/ipfs/QmEvidence/challenge-evidence.json");
 
         // Check request is now disputed
         (bool disputed,,,,,,,,,) = registry.getRequestInfo(itemID, 0);
@@ -319,10 +334,10 @@ contract IntendhubRegistryTest is Test {
     }
 
     // ========================================================================
-    // Guardian removal pattern tests
+    // Uniform removal lifecycle tests
     // ========================================================================
 
-    function test_guardianRemovalRequest() public {
+    function test_removalRequest() public {
         bytes32 itemID = keccak256(TEST_ITEM_1);
         uint256 submitDeposit = SUBMISSION_DEPOSIT + ARBITRATION_PRICE;
         uint256 removalDeposit = REMOVAL_DEPOSIT + ARBITRATION_PRICE;
@@ -337,23 +352,20 @@ contract IntendhubRegistryTest is Test {
         (, IGeneralizedTCR.Status status,) = registry.getItemInfo(itemID);
         assertEq(uint256(status), uint256(IGeneralizedTCR.Status.Registered));
 
-        // Guardian requests removal
-        vm.prank(guardian);
-        registry.removeItem{value: removalDeposit}(
-            itemID,
-            "/ipfs/QmEvidence/guardian-removal-evidence.json"
-        );
+        // Any funded account may request removal under the stock lifecycle.
+        vm.prank(remover);
+        registry.removeItem{value: removalDeposit}(itemID, "/ipfs/QmEvidence/removal-evidence.json");
 
         // Item should be in ClearingRequested status
         (, status,) = registry.getItemInfo(itemID);
         assertEq(uint256(status), uint256(IGeneralizedTCR.Status.ClearingRequested));
 
-        // Verify the requester is the guardian address
-        (,,,, address payable[3] memory parties,,,,, ) = registry.getRequestInfo(itemID, 1);
-        assertEq(parties[1], guardian, "Removal requester should be guardian");
+        // Verify the ordinary removal requester is recorded.
+        (,,,, address payable[3] memory parties,,,,,) = registry.getRequestInfo(itemID, 1);
+        assertEq(parties[1], remover, "Removal requester should be recorded");
     }
 
-    function test_guardianRemovalExecutes() public {
+    function test_removalExecutes() public {
         bytes32 itemID = keccak256(TEST_ITEM_1);
         uint256 submitDeposit = SUBMISSION_DEPOSIT + ARBITRATION_PRICE;
         uint256 removalDeposit = REMOVAL_DEPOSIT + ARBITRATION_PRICE;
@@ -365,11 +377,11 @@ contract IntendhubRegistryTest is Test {
         vm.warp(t1);
         registry.executeRequest(itemID);
 
-        // Guardian requests removal
-        vm.prank(guardian);
+        // Request removal
+        vm.prank(remover);
         registry.removeItem{value: removalDeposit}(itemID, "");
 
-        // Advance past challenge period (no one challenges the guardian)
+        // Advance past challenge period (no one challenges the request)
         vm.warp(t1 + CHALLENGE_PERIOD + 1);
         registry.executeRequest(itemID);
 
@@ -378,7 +390,7 @@ contract IntendhubRegistryTest is Test {
         assertEq(uint256(status), uint256(IGeneralizedTCR.Status.Absent));
     }
 
-    function test_guardianRemovalCanBeChallenged() public {
+    function test_removalCanBeChallenged() public {
         bytes32 itemID = keccak256(TEST_ITEM_1);
         uint256 submitDeposit = SUBMISSION_DEPOSIT + ARBITRATION_PRICE;
         uint256 removalDeposit = REMOVAL_DEPOSIT + ARBITRATION_PRICE;
@@ -390,21 +402,21 @@ contract IntendhubRegistryTest is Test {
         vm.warp(block.timestamp + CHALLENGE_PERIOD + 1);
         registry.executeRequest(itemID);
 
-        // Guardian requests removal
-        vm.prank(guardian);
+        // Request removal
+        vm.prank(remover);
         registry.removeItem{value: removalDeposit}(itemID, "");
 
-        // Someone challenges the guardian's removal
+        // Someone challenges the removal request
         vm.prank(challenger);
-        registry.challengeRequest{value: challengeDeposit}(itemID, "Guardian removal unjustified");
+        registry.challengeRequest{value: challengeDeposit}(itemID, "Removal unjustified");
 
-        // Rule against the guardian (2 = Challenger wins, item stays)
+        // Rule against the removal requester (2 = Challenger wins, item stays)
         vm.prank(governor);
         arbitrator.giveRuling(0, 2);
         vm.warp(block.timestamp + APPEAL_TIMEOUT + 1);
         arbitrator.executeRuling(0);
 
-        // Item should still be Registered (guardian's removal rejected)
+        // Item should still be Registered (removal request rejected)
         (, IGeneralizedTCR.Status status,) = registry.getItemInfo(itemID);
         assertEq(uint256(status), uint256(IGeneralizedTCR.Status.Registered));
     }
