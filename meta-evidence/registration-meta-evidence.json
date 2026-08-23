@@ -1,60 +1,61 @@
 {
-  "title": "Add an entry to Intendhub Registry",
-  "description": "Someone requested to add an agent skill, plugin, or convention to the Intendhub Registry.",
-  "question": "Does this entry comply with the Intendhub listing policy?",
+  "title": "Add a skill to Intendhub Registry",
+  "description": "Someone requested to add an agent skill to the Intendhub Registry.",
+  "question": "Does this skill comply with the Intendhub listing policy?",
   "rulingOptions": {
     "titles": ["Yes, Add It", "No, Don't Add It"],
     "descriptions": [
-      "Select this if the entry complies with all acceptance criteria in the listing policy and should be added to the registry.",
-      "Select this if the entry violates one or more acceptance criteria and should not be added."
+      "Select this if the skill complies with all acceptance criteria in the listing policy and should be added to the registry.",
+      "Select this if the skill violates one or more acceptance criteria and should not be added."
     ]
   },
   "category": "Curated Lists",
   "fileURI": "/ipfs/TODO_LISTING_POLICY_CID/listing-policy.pdf",
   "dynamicScriptURI": "",
   "metadata": {
-    "tcrTitle": "Intendhub Registry",
-    "tcrDescription": "A curated registry of AI agent skills, plugins, and conventions verified through Kleros dispute resolution.",
+    "tcrTitle": "Intendhub Skills Registry",
+    "tcrDescription": "An optimistic Kleros-curated registry of AI agent skills.",
+    "logoURI": "/ipfs/TODO_LOGO_CID/intendhub-logo.svg",
     "columns": [
       {
         "label": "Name",
-        "description": "Human-readable name of the entry.",
+        "description": "Must be byte-identical to the name field in the skill tree's SKILL.md frontmatter.",
         "type": "text",
         "isIdentifier": true
       },
       {
-        "label": "Source Type",
-        "description": "Source type: git, npm, pypi, docker, or ipfs.",
-        "type": "text",
+        "label": "Description",
+        "description": "Must be byte-identical to the description field in the skill tree's SKILL.md frontmatter.",
+        "type": "long text",
         "isIdentifier": false
       },
       {
-        "label": "Source Locator",
-        "description": "Any public git repository URL @ full 40-char commit SHA-1 (e.g., https://github.com/org/repo@a1b2c3...).",
-        "type": "text",
-        "isIdentifier": true
-      },
-      {
-        "label": "Category",
-        "description": "Entry type: skill, plugin, or convention.",
+        "label": "Tree CID",
+        "description": "Bare canonical CIDv1 (base32, lowercase), DAG-PB with a 32-byte SHA-256 multihash, identifying the complete UnixFS skill directory.",
         "type": "text",
         "isIdentifier": true
       },
       {
         "label": "Runtimes",
-        "description": "Comma-separated supported runtimes (e.g., claude_code,cursor,generic).",
+        "description": "Comma-separated supported agent runtimes (for example, claude_code,generic).",
         "type": "text",
         "isIdentifier": false
       },
       {
-        "label": "Description",
-        "description": "Brief description of what this entry does.",
-        "type": "long text",
+        "label": "Origin",
+        "description": "Optional provenance claim. If present, evidence must bind the exact submitted semantic skill tree under the listing policy, not merely the same owner, domain, account, or repository.",
+        "type": "text",
+        "isIdentifier": false
+      },
+      {
+        "label": "Reserved",
+        "description": "Reserved for a future policy version. Must be the empty string under the current policy.",
+        "type": "text",
         "isIdentifier": false
       }
     ],
-    "itemName": "entry",
-    "itemNamePlural": "entries",
+    "itemName": "skill",
+    "itemNamePlural": "skills",
     "requireRemovalEvidence": true,
     "isTCRofTCRs": false,
     "relTcrDisabled": true
