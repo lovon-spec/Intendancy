@@ -8,7 +8,7 @@ export function SubmitPage() {
       <div>
         <h1 className="text-2xl font-bold text-gray-900">Submit Entry</h1>
         <p className="text-sm text-gray-500 mt-1">
-          Submit an AI agent skill, plugin, or convention to the registry.
+          Submit an AI agent skill to the registry.
           A deposit is required and will be refunded if the entry is accepted.
           Your submission must comply with the{" "}
           <Link to="/policy" className="text-blue-600 hover:underline">listing policy</Link>.

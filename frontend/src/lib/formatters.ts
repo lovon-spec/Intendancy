@@ -23,12 +23,3 @@ export function timeRemaining(targetTimestamp: bigint): string {
   if (hours > 0) return `${hours}h ${minutes}m`;
   return `${minutes}m`;
 }
-
-export function parseSourceLocator(locator: string): { repoUrl: string; commitHash: string } | null {
-  const atIdx = locator.lastIndexOf("@");
-  if (atIdx === -1) return null;
-  return {
-    repoUrl: locator.slice(0, atIdx),
-    commitHash: locator.slice(atIdx + 1),
-  };
-}

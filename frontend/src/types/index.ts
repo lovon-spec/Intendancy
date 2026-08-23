@@ -15,28 +15,29 @@ export type Party = (typeof Party)[keyof typeof Party];
 
 export type DisplayStatus =
   | "registered"
-  | "long-standing"
   | "pending-registration"
-  | "pending-removal"
   | "disputed"
   | "flagged"
   | "absent";
 
 export interface ItemFields {
   name: string;
-  sourceType: string;
-  sourceLocator: string;
-  category: "skill" | "plugin" | "convention";
-  runtimes: string;
   description: string;
+  treeCid: string;
+  runtimes: string;
+  origin: string;
+  reserved: string;
 }
 
 export interface RegistryItem {
+  index: number;
   itemID: `0x${string}`;
-  fields: ItemFields;
+  fields?: ItemFields;
+  descriptorError?: string;
   rawData: `0x${string}`;
   status: ItemStatus;
   numberOfRequests: number;
+  requestDisputed: boolean;
   displayStatus: DisplayStatus;
 }
 

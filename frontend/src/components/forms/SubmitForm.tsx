@@ -1,8 +1,9 @@
 import { useState } from "react";
 import { useAccount } from "wagmi";
-import { CATEGORIES, SUGGESTED_RUNTIMES as RUNTIMES, SOURCE_TYPES, SOURCE_TYPE_CONFIG, type SourceType } from "../../config/registry";
+import { SUGGESTED_RUNTIMES as RUNTIMES } from "../../config/registry";
 import { useRegistryParams } from "../../hooks/useRegistryParams";
 import { useSubmitItem } from "../../hooks/useSubmitItem";
+import { getItemValidationError } from "../../lib/schema";
 import { DepositInfo } from "./DepositInfo";
 import { TransactionStatus } from "../wallet/TransactionStatus";
 import type { ItemFields } from "../../types";
@@ -13,15 +14,12 @@ export function SubmitForm() {
   const { submit, hash, isPending, isConfirming, isSuccess, error, reset } = useSubmitItem();
 
   const [name, setName] = useState("");
-  const [sourceType, setSourceType] = useState<SourceType>("git");
-  const [sourceLocator, setSourceLocator] = useState("");
-  const [category, setCategory] = useState<string>("skill");
+  const [description, setDescription] = useState("");
+  const [treeCid, setTreeCid] = useState("");
   const [selectedRuntimes, setSelectedRuntimes] = useState<string[]>(["generic"]);
   const [customRuntime, setCustomRuntime] = useState("");
-  const [description, setDescription] = useState("");
+  const [origin, setOrigin] = useState("");
   const [validationError, setValidationError] = useState("");
-
-  const stConfig = SOURCE_TYPE_CONFIG[sourceType];
 
   function toggleRuntime(rt: string) {
     setSelectedRuntimes((prev) =>
@@ -42,24 +40,18 @@ export function SubmitForm() {
     setValidationError("");
     reset();
 
-    if (!name.trim()) { setValidationError("Name is required"); return; }
-    if (!sourceLocator.trim()) { setValidationError("Source Locator is required"); return; }
-    if (!stConfig.validate(sourceLocator.trim())) {
-      setValidationError(`Invalid ${stConfig.label} locator. ${stConfig.helpText}`);
-      return;
-    }
-    if (selectedRuntimes.length === 0) { setValidationError("Select at least one runtime"); return; }
-    if (!description.trim()) { setValidationError("Description is required"); return; }
-    if (!params) { setValidationError("Loading registry parameters..."); return; }
-
     const fields: ItemFields = {
-      name: name.trim(),
-      sourceType,
-      sourceLocator: sourceLocator.trim(),
-      category: category as ItemFields["category"],
+      name,
+      description,
+      treeCid,
       runtimes: selectedRuntimes.join(","),
-      description: description.trim(),
+      origin,
+      reserved: "",
     };
+
+    const descriptorError = getItemValidationError(fields);
+    if (descriptorError) { setValidationError(descriptorError); return; }
+    if (!params) { setValidationError("Loading registry parameters..."); return; }
 
     submit(fields, params);
   }
@@ -75,44 +67,31 @@ export function SubmitForm() {
           placeholder="my-awesome-skill"
           className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
         />
+        <p className="text-xs text-gray-500 mt-1">Must be byte-identical to the SKILL.md frontmatter name</p>
       </div>
 
       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1">Source Type</label>
-        <select
-          value={sourceType}
-          onChange={(e) => { setSourceType(e.target.value as SourceType); setSourceLocator(""); }}
-          className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm bg-white"
-        >
-          {SOURCE_TYPES.map((st) => (
-            <option key={st} value={st}>{SOURCE_TYPE_CONFIG[st].label}</option>
-          ))}
-        </select>
+        <label className="block text-sm font-medium text-gray-700 mb-1">Description</label>
+        <textarea
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          rows={3}
+          placeholder="Exact description from SKILL.md frontmatter"
+          className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+        />
+        <p className="text-xs text-gray-500 mt-1">Must be byte-identical to the SKILL.md frontmatter description</p>
       </div>
 
       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1">Source Locator</label>
+        <label className="block text-sm font-medium text-gray-700 mb-1">Tree CID</label>
         <input
           type="text"
-          value={sourceLocator}
-          onChange={(e) => setSourceLocator(e.target.value)}
-          placeholder={stConfig.placeholder}
+          value={treeCid}
+          onChange={(e) => setTreeCid(e.target.value)}
+          placeholder="bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi"
           className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
         />
-        <p className="text-xs text-gray-500 mt-1">{stConfig.helpText}</p>
-      </div>
-
-      <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1">Category</label>
-        <select
-          value={category}
-          onChange={(e) => setCategory(e.target.value)}
-          className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm bg-white"
-        >
-          {CATEGORIES.map((c) => (
-            <option key={c} value={c}>{c}</option>
-          ))}
-        </select>
+        <p className="text-xs text-gray-500 mt-1">This form checks only canonical CIDv1 syntax (DAG-PB with SHA-256). Policy still requires you to upload and pin the complete UnixFS tree, verify its contents, size, and SKILL.md bindings, and keep it available throughout the submission period.</p>
       </div>
 
       <div>
@@ -169,14 +148,15 @@ export function SubmitForm() {
       </div>
 
       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1">Description</label>
-        <textarea
-          value={description}
-          onChange={(e) => setDescription(e.target.value)}
-          rows={3}
-          placeholder="Brief description of what this entry does..."
-          className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+        <label className="block text-sm font-medium text-gray-700 mb-1">Origin <span className="font-normal text-gray-400">(optional)</span></label>
+        <input
+          type="text"
+          value={origin}
+          onChange={(e) => setOrigin(e.target.value)}
+          placeholder="https://github.com/org/repo@0123456789abcdef0123456789abcdef01234567"
+          className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
         />
+        <p className="text-xs text-gray-500 mt-1">This field checks syntax only. If present, public provenance evidence must bind this exact Tree CID—not merely the same owner, domain, or repository.</p>
       </div>
 
       {params && (

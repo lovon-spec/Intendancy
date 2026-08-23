@@ -7,19 +7,19 @@ import { FilterBar } from "../components/registry/FilterBar";
 export function RegistryPage() {
   const { data: items, isLoading, error } = useRegistryItems();
   const [search, setSearch] = useState("");
-  const [category, setCategory] = useState("");
   const [status, setStatus] = useState("");
 
   const filtered = useMemo(() => {
     return items.filter((item) => {
-      if (search && !item.fields.name.toLowerCase().includes(search.toLowerCase())) return false;
-      if (category && item.fields.category !== category) return false;
-      if (status && item.displayStatus !== status) return false;
+      const searchableName = item.fields?.name || item.itemID;
+      if (search && !searchableName.toLowerCase().includes(search.toLowerCase())) return false;
+      if (status === "disputed" && !item.requestDisputed) return false;
+      if (status && status !== "disputed" && item.displayStatus !== status) return false;
       // Hide absent items by default
       if (!status && item.displayStatus === "absent") return false;
       return true;
     });
-  }, [items, search, category, status]);
+  }, [items, search, status]);
 
   return (
     <div className="space-y-6">
@@ -27,7 +27,7 @@ export function RegistryPage() {
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Registry</h1>
           <p className="text-sm text-gray-500 mt-1">
-            Community-curated AI agent skills, plugins, and conventions
+            Community-curated AI agent skills
           </p>
         </div>
         <Link
@@ -40,7 +40,6 @@ export function RegistryPage() {
 
       <FilterBar
         search={search} onSearchChange={setSearch}
-        category={category} onCategoryChange={setCategory}
         status={status} onStatusChange={setStatus}
       />
 
@@ -60,11 +59,13 @@ export function RegistryPage() {
         </div>
       )}
 
-      <div className="grid gap-3 sm:grid-cols-2">
-        {filtered.map((item) => (
-          <ItemCard key={item.itemID} item={item} />
-        ))}
-      </div>
+      {!isLoading && !error && (
+        <div className="grid gap-3 sm:grid-cols-2">
+          {filtered.map((item) => (
+            <ItemCard key={item.itemID} item={item} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
