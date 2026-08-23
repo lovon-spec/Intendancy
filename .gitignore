@@ -7,6 +7,7 @@ cache/
 # Foundry
 contracts/out/
 contracts/cache/
+contracts/broadcast/
 
 # Frontend
 frontend/.next/
@@ -23,8 +24,8 @@ subgraph/node_modules/
 
 # Environment
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
 
 # OS
 .DS_Store
