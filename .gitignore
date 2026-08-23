@@ -27,6 +27,9 @@ subgraph/node_modules/
 .env.*
 !.env.example
 
+# Local agent instructions
+CLAUDE.md
+
 # OS
 .DS_Store
 Thumbs.db
