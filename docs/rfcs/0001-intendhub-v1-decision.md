@@ -90,6 +90,19 @@ Column 6 is present and **must be the empty string** under this policy version. 
 
 If Origin is present, the provenance evidence must bind the exact submitted semantic skill tree. A publisher may attest the literal Tree CID; a pinned git commit may establish the same relative paths, node kinds, file bytes and executable bits, and symlink targets under the equivalence rules in the listing policy. Mere repository, commit, domain, or publisher association is insufficient.
 
+> **Amendment (owner decision, 2026-08-24).** The semantic-tree sentence above is
+> superseded for V1: skill trees consist of directories and regular files ONLY —
+> symlinks are prohibited, and executable bits are **not semantic** (installers
+> neither preserve nor interpret them; scripts run via explicit interpreters).
+> The git-equivalence rules therefore compare relative paths, node kinds
+> (directory/regular file), and file bytes; an exec-bit-only difference still
+> binds, and a commit containing symlinks binds no listable tree. Normative text:
+> listing-policy v2.1 (criteria 2 and 6). A second owner decision of the same
+> date pins ONE IMMUTABLE POLICY PER REGISTRY: consumers prove the registry's
+> `metaEvidenceUpdates` counter is zero at every verification anchor, and a
+> policy change requires a new registry deployment (verified-snapshot-spec §6
+> step 3b).
+
 There is no guardian roster or privileged requester identity. Any party may use the stock removal-request path, and clients apply the same `ClearingRequested` suspension regardless of who paid the request deposit.
 
 ## 6. Explicit V1 exclusions
