@@ -1,0 +1,36 @@
+[package]
+name = "snapshot-bench"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Spike (Implementation Brief 0002 / RFC 0001 Gate 2): Classic GTCR snapshot generation + verification benchmarks at 1k/10k items, plus the CAR/UnixFS install path. Non-production."
+
+# Deliberately its own workspace.
+[workspace]
+
+[dependencies]
+alloy = { version = "1.0.37", features = [
+    "providers",
+    "provider-http",
+    "rpc-types",
+    "consensus",
+    "contract",
+    "sol-types",
+    "network",
+    "signer-local",
+    "rlp",
+] }
+alloy-trie = { version = "0.9.5", features = ["ethereum"] }
+
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+eyre = "0.6"
+thiserror = "2"
+flate2 = "1"
+data-encoding = "2"
+sha2 = "0.10"
+
+[dev-dependencies]
+tempfile = "3"
