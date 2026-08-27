@@ -1,6 +1,6 @@
 # Intendhub Skills Registry — Listing Policy
 
-**Version**: 2.0 (draft)
+**Version**: 2.1 (draft; pre-launch amendment 2026-08-24: symlinks prohibited in trees, executable bits non-semantic — owner decision)
 **Registry**: Intendhub Skills Registry (Classic GeneralizedTCR)
 **Chain**: Gnosis Chain (chain ID 100)
 **Registry address**: `[TO BE SET AT DEPLOYMENT]`
@@ -47,6 +47,8 @@ The skill tree's root contains a `SKILL.md` that is a valid skill per the **Agen
 
 The entry must be a skill (an invocable capability). Project-instruction files, plugin bundles, or other artifact types miscategorized as skills fail this criterion.
 
+The tree consists of directories and regular files ONLY: it MUST NOT contain symlinks (of any target), and executable permission bits are **not semantic** in this policy version — conforming installers neither preserve nor interpret them, and skills invoke their scripts through explicit interpreters (e.g., `bash scripts/x.sh`, `python3 scripts/y.py`). A tree whose behavior depends on a file's executable bit fails this criterion.
+
 ### 3. Frontmatter Binding
 The Name and Description columns are byte-identical to the SKILL.md frontmatter `name` and `description`. (This guarantees the on-chain strings a consumer indexes are exactly the strings an agent runtime will load from the verified artifact.)
 
@@ -72,7 +74,7 @@ If the Origin column is present, it must verifiably bind the claimed publisher o
 
 Common ownership, cross-linking, or control of both a repository and a domain is not sufficient unless the public provenance evidence binds the exact submitted semantic skill tree under one of the rules above.
 
-For git comparison, the semantic tree consists of every relative path, node kind, regular-file byte sequence and executable bit, and symlink target. The descriptor Name supplies the virtual outer-directory name. UnixFS chunking and transport-only metadata such as modification times do not create a provenance mismatch.
+For git comparison, the semantic tree consists of every relative path, node kind (directory or regular file), and regular-file byte sequence. Symlinks are prohibited in trees (criterion 2), and executable bits are not semantic in this policy version, so a git commit that differs from the submitted tree ONLY in executable bits still binds it; a commit containing symlinks cannot bind any listable tree. The descriptor Name supplies the virtual outer-directory name. UnixFS chunking and transport-only metadata such as modification times do not create a provenance mismatch.
 
 A false or unverifiable Origin claim is a violation of the same severity as impersonation.
 
