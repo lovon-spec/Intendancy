@@ -7,6 +7,15 @@
 the exact codehash — plus, because the verifier's soundness needs a property
 behavior alone cannot show (see Semantics), a verified-source pin for the
 no-reset property.
+**Companion artifacts** (review note): the probe script referenced below and
+the verifier that ENFORCES this invariant live in the `intend` CLI
+(`cli/tools/probe-meta-evidence-slot.sh`; `cli/src/snapshot.rs` §6 step 3b
+plus the per-install point check), which lands in the companion CLI pull
+request; the spec text defining step 3b lands in the companion docs pull
+request. The Gate 2 spike crate in THIS change set predates the slot-9 owner
+decision and deliberately proves only the item-list length, entries, and
+statuses — it does not and is not claimed to prove slot 9. Until all three
+companion changes merge, these references resolve only in the combined tree.
 **Reproduction**: `cli/tools/probe-meta-evidence-slot.sh` — every claim below,
 the verified-source hash and bytecode disassembly included, is an ASSERTION
 in the script (any violation exits nonzero). The ASSERTION TRANSCRIPT — a
@@ -114,8 +123,10 @@ deployment of the SAME runtime generation:
 
 ## Semantics
 
-- The verifier's invariant is `metaEvidenceUpdates == 0` proven at every
-  anchor (spec §6 step 3b, §8 point checks).
+- The CONSUMER verifier's invariant (the `intend` CLI + spec §6 step 3b / §8
+  point checks — companion changes, per the note at the top) is
+  `metaEvidenceUpdates == 0` proven at every anchor. The Gate 2 spike's
+  verifier here does not check slot 9 (it predates the owner decision).
 - **The no-reset property is LOAD-BEARING for that invariant.** A `== 0` proof
   at one anchor establishes "never updated as of that anchor" only because no
   path returns the counter to zero: if the bytecode had a reset path, a
