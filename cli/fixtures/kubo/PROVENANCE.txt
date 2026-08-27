@@ -1,0 +1,9 @@
+generator: tools/gen-kubo-vectors.sh (deterministic across environments; both vectors)
+kubo: 0.43.0 (pinned)
+deterministic metadata: TZ=UTC; touch -t 202601010000.00 on every node; chmod 0755 all dirs; chmod 0644 all files; chmod 0755 references/large.bin (exec-bit coverage)
+default vector: ipfs add -rQ --cid-version 1 --offline <tree>; ipfs dag export <root>
+default root: bafybeidgtfsc2ro3pfmyggmbz4ea7xg7g4gpehqur7klaadtreyjz6s3fu
+car-sha256: a9f19d654417f6ec62b19f92374773434b76e8aa22f4843ffdf97a84d488772e
+metadata vector (mode+mtime): ipfs add -rQ --cid-version 1 --offline --preserve-mode --preserve-mtime <tree>; ipfs dag export <root>
+metadata root: bafybeiaidl7c2gpu2ly5llpyl6upe4jpg6rg6st3367axjdmrumx2twpqu
+mode-car-sha256: 8350e2be6fd56086ca1a972154c323e5162cd3512124d28965df820143cfb27e
