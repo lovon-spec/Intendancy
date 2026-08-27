@@ -400,10 +400,10 @@ async fn main() -> Result<()> {
                 profile.registry,
                 &quorum,
             )?;
-            let now = unix_now()?;
-            let mut all_current = true;
-            let mut report = Vec::new();
-            for entry in &mut lock.entries {
+            // Validate EVERY entry's binding before any mutation: a
+            // configuration-level mismatch must abort with the lockfile
+            // untouched, never mid-sweep.
+            for entry in &lock.entries {
                 if entry.chain_id != profile.chain_id
                     || entry.registry != profile.registry
                     || entry.deployment_context_id != profile.deployment_context_id()
@@ -417,12 +417,43 @@ async fn main() -> Result<()> {
                         entry.deployment_context_id
                     );
                 }
+            }
+            let now = unix_now()?;
+            let mut all_current = true;
+            let mut check_failures = 0usize;
+            let mut report = Vec::new();
+            for entry in &mut lock.entries {
                 // Local integrity FIRST (review finding 3): the installed bytes
                 // must match the lockfile exactly.
                 let integrity = verify_local_integrity(entry);
+                // A failed check on THIS entry must not discard sticky
+                // transitions already observed on EARLIER entries (PR #1
+                // re-review): record the failure, leave this entry's state
+                // untouched, keep sweeping — the unconditional save below
+                // persists everything that WAS observed, and the command still
+                // fails closed via exit 1.
                 let status =
-                    chain::point_check(profile.proof_rpc(), &profile, &quorum, entry.item_id)
-                        .await?;
+                    match chain::point_check(profile.proof_rpc(), &profile, &quorum, entry.item_id)
+                        .await
+                    {
+                        Ok(status) => status,
+                        Err(e) => {
+                            check_failures += 1;
+                            all_current = false;
+                            report.push(serde_json::json!({
+                                "name": entry.name,
+                                "itemId": entry.item_id,
+                                "installDir": entry.install_dir,
+                                "state": "check-failed",
+                                "error": format!("{e:#}"),
+                                "localIntegrity": match &integrity {
+                                    Ok(()) => "intact".to_string(),
+                                    Err(e) => format!("{e:#}"),
+                                },
+                            }));
+                            continue;
+                        }
+                    };
                 let (state, sticky) =
                     intend::lockfile::audit_state_for(entry, status, integrity.is_ok());
                 if state != "current" {
@@ -448,6 +479,8 @@ async fn main() -> Result<()> {
                     "state": state,
                 }));
             }
+            // Persist UNCONDITIONALLY — observed sticky transitions survive
+            // even when some entries could not be checked this sweep.
             lock.save(&lock_path)?;
             println!(
                 "{}",
@@ -456,6 +489,7 @@ async fn main() -> Result<()> {
                     "anchorMode": mode_label,
                     "freshCheck": "verified, non-exhaustive (point mode per entry)",
                     "anchorBlock": quorum.block_number,
+                    "checkFailures": check_failures,
                     "entries": report,
                 })
             );

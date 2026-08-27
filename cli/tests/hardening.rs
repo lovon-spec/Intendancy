@@ -643,3 +643,25 @@ fn hard_linked_sidecar_rejects_in_both_acquire_paths() {
     let err = format!("{:#}", ScopeLock::try_acquire(&sidecar).unwrap_err());
     assert!(err.contains("dedicated empty regular"), "{err}");
 }
+
+#[test]
+fn oversized_account_proof_rejects_at_the_wire_boundary() {
+    // PR #3 re-review: a "0x" account-proof element costs ~4 JSON bytes but
+    // tens of heap bytes, so a document under the decoded cap could allocate
+    // gigabytes BEFORE verify's count checks run. The deserializer itself now
+    // bounds the collection, so the reject happens during parsing without
+    // materializing the flood.
+    let f = build_fixture();
+    let mut v = serde_json::to_value(&f.snapshot).unwrap();
+    v["proofs"]["account"] =
+        serde_json::Value::Array(vec![serde_json::Value::String("0x".into()); 500]);
+    let raw = serde_json::to_vec(&v).unwrap();
+    let err = format!(
+        "{:#}",
+        intend::snapshot::read_snapshot_bounded(&raw, &Limits::default()).unwrap_err()
+    );
+    assert!(err.contains("account proof exceeds"), "{err}");
+    // The honest fixture still round-trips (control).
+    let raw = serde_json::to_vec(&f.snapshot).unwrap();
+    intend::snapshot::read_snapshot_bounded(&raw, &Limits::default()).unwrap();
+}

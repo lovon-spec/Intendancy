@@ -78,7 +78,10 @@ intend --profile profile.toml enable ./skill         # clear a sticky suspension
   fd-relative, so a stale path is never knowingly finalized or resolved again.
 - `audit` — verifies the INSTALLED BYTES against the lockfile (exact file set,
   sizes, digests; divergence is the fail-closed `modified` state), then a fresh
-  point check per entry: `current` (Registered, intact), `quarantined`
+  point check per entry — a check that FAILS for one entry records
+  "check-failed" for it and keeps sweeping, so sticky transitions observed on
+  other entries are always persisted (the command still exits 1): `current`
+  (Registered, intact), `quarantined`
   (ClearingRequested — requester-neutral suspension), `revoked` (this exact
   item was verified Registered locally and is now Absent — the lockfile-local
   rule; unrelated Absent rows never become a revocation list), `blocked`
@@ -169,7 +172,7 @@ set it, and the CLI refuses it against chains that serve real state roots.
 ## Tests
 
 ```bash
-cargo test --locked    # 82 offline tests: schema/profile units (incl. strict
+cargo test --locked    # 83 offline tests: schema/profile units (incl. strict
                        # MetaEvidence CID decode + deployment-context-id
                        # variation) + counting-reader consumption proofs for
                        # the §4.1 take-bound; CAR tamper suite
