@@ -10,6 +10,7 @@ pub mod fetch;
 pub mod lockfile;
 pub mod policy;
 pub mod profile;
+pub mod resolve;
 pub mod schema;
 pub mod snapshot;
 pub mod store;

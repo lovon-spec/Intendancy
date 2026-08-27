@@ -691,3 +691,26 @@ fn duplicate_unixfs_metadata_fields_reject_while_single_ones_are_ignored() {
     let err = format!("{:#}", intend::car::decode_pbnode(&dup_mtime).unwrap_err());
     assert!(err.contains("duplicate UnixFS mtime"), "{err}");
 }
+
+#[test]
+fn empty_directory_entry_names_reject_at_preflight() {
+    // PR #2 review pin: a crafted DIRECTORY link with an EMPTY Name would
+    // join to its parent path and collapse a directory level (a nested
+    // SKILL.md could surface at the root). sanitize rejects it during
+    // preflight, before any filesystem planning. (File-CHUNK links, by
+    // contrast, are REQUIRED to be empty-named; only directory entries carry
+    // path names.)
+    let mut blocks = std::collections::BTreeMap::new();
+    let leaf = b"x".to_vec();
+    let leaf_cid = intend::car::Cid::for_block(0x55, &leaf);
+    blocks.insert(leaf_cid, leaf);
+    let dir = intend::car::encode_directory(&[intend::car::PbLink {
+        cid: leaf_cid,
+        name: String::new(),
+        tsize: 1,
+    }]);
+    let root = intend::car::Cid::for_block(0x70, &dir);
+    blocks.insert(root, dir);
+    let err = format!("{:#}", intend::car::preflight(root, &blocks).unwrap_err());
+    assert!(err.contains("unsafe path component"), "{err}");
+}

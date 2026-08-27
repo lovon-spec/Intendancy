@@ -204,8 +204,7 @@ async fn main() -> Result<()> {
                 profile.registry,
                 profile.deployment_context_id(),
             )?;
-            let (row, descriptor) = resolve_item(&catalog, &item)?;
-            screen(&descriptor)?;
+            let resolved = resolve_reference(&catalog, &item)?;
 
             // Load AND prove the lockfile writable BEFORE any content publish
             // (review finding 4): a malformed or unwritable lockfile must fail
@@ -224,8 +223,48 @@ async fn main() -> Result<()> {
                 profile.registry,
                 &quorum,
             )?;
-            let status =
-                chain::point_check(profile.proof_rpc(), &profile, &quorum, row.item_id).await?;
+            let (row, descriptor, status) = match resolved {
+                // Exact-ID installs: fresh-prove the one item, as before.
+                Resolved::ById(row, descriptor) => {
+                    let status =
+                        chain::point_check(profile.proof_rpc(), &profile, &quorum, row.item_id)
+                            .await?;
+                    (row, descriptor, status)
+                }
+                // Name-based installs (PR #1 review): uniqueness must hold at
+                // the FRESH anchor, not in the saved catalog. Two proofs make
+                // that sound: (a) the registry's CURRENT itemCount must equal
+                // the catalog's — descriptors are immutable, so an unseen
+                // same-name item cannot exist without growing the count; (b)
+                // EVERY same-name candidate's status is freshly proven, and
+                // exactly one may be Registered.
+                Resolved::ByName(mut candidates) => {
+                    let fresh_count =
+                        chain::point_item_count(profile.proof_rpc(), &profile, &quorum).await?;
+                    if fresh_count != catalog.snapshot.item_count {
+                        bail!(
+                            "the verified catalog holds {} items but the registry proves {} \
+                             at block {} — the catalog is stale for name-based install; run \
+                             `intend update` first (or install by 0x-itemID)",
+                            catalog.snapshot.item_count,
+                            fresh_count,
+                            quorum.block_number
+                        );
+                    }
+                    let mut fresh = Vec::with_capacity(candidates.len());
+                    for (r, _) in &candidates {
+                        fresh.push((
+                            r.item_id,
+                            chain::point_check(profile.proof_rpc(), &profile, &quorum, r.item_id)
+                                .await?,
+                        ));
+                    }
+                    let idx = intend::resolve::pick_unique_registered(&fresh)?;
+                    let (row, descriptor) = candidates.swap_remove(idx);
+                    (row, descriptor, 1)
+                }
+            };
+            screen(&descriptor)?;
             if status != 1 {
                 bail!(
                     "item {} is {} at block {} — only Registered (1) installs (failing closed)",
@@ -660,9 +699,16 @@ fn status_name(status: u8) -> &'static str {
     }
 }
 
-/// Resolve a user reference (0x-itemID or unique Registered name) against the
-/// verified catalog.
-fn resolve_item(catalog: &Catalog, reference: &str) -> Result<(intend::snapshot::Row, Descriptor)> {
+/// A user reference resolved against the verified catalog: an exact item, or
+/// the COMPLETE set of same-name candidates (any status) — the caller decides
+/// name uniqueness at the FRESH anchor, never from the catalog's statuses
+/// (PR #1 review).
+enum Resolved {
+    ById(intend::snapshot::Row, Descriptor),
+    ByName(Vec<(intend::snapshot::Row, Descriptor)>),
+}
+
+fn resolve_reference(catalog: &Catalog, reference: &str) -> Result<Resolved> {
     if let Some(hex) = reference.strip_prefix("0x") {
         let id: B256 = hex
             .parse::<B256>()
@@ -675,7 +721,7 @@ fn resolve_item(catalog: &Catalog, reference: &str) -> Result<(intend::snapshot:
             .find(|r| r.item_id == id)
             .ok_or_else(|| eyre::eyre!("itemID {id} is not in the verified catalog"))?;
         let d = Descriptor::decode(&row.descriptor)?;
-        return Ok((row.clone(), d));
+        return Ok(Resolved::ById(row.clone(), d));
     }
     let mut matches = Vec::new();
     for row in &catalog.snapshot.rows {
@@ -684,25 +730,10 @@ fn resolve_item(catalog: &Catalog, reference: &str) -> Result<(intend::snapshot:
             matches.push((row.clone(), d));
         }
     }
-    match matches.len() {
-        0 => bail!("no catalog entry named {reference:?}"),
-        1 => Ok(matches.remove(0)),
-        _ => {
-            let mut registered: Vec<_> =
-                matches.into_iter().filter(|(r, _)| r.status == 1).collect();
-            match registered.len() {
-                1 => Ok(registered.remove(0)),
-                0 => bail!(
-                    "name {reference:?} matches multiple entries, none currently Registered — \
-                     install by 0x-itemID"
-                ),
-                _ => bail!(
-                    "name {reference:?} is ambiguous among Registered entries — install by \
-                     0x-itemID"
-                ),
-            }
-        }
+    if matches.is_empty() {
+        bail!("no catalog entry named {reference:?}");
     }
+    Ok(Resolved::ByName(matches))
 }
 
 /// Read a local file with a hard byte cap (streaming; never materializes more

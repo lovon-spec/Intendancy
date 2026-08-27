@@ -54,7 +54,13 @@ intend --profile profile.toml enable ./skill         # clear a sticky suspension
   too.
 - `install` — resolves the item, re-screens, does a FRESH point check at the
   latest finalized quorum anchor (only `Registered` installs; "verified,
-  non-exhaustive" by construction), fetches the CAR from a local file or the
+  non-exhaustive" by construction). NAME-based installs additionally prove
+  the resolution FRESH: the registry's current itemCount must equal the
+  verified catalog's (descriptors are immutable, so count equality proves the
+  same-name candidate set complete), and EVERY same-name candidate's status
+  is freshly proven with exactly one allowed to be Registered — a name that
+  is ambiguous NOW refuses even if the saved catalog was unambiguous
+  (0x-itemID installs are the recommended exact path). It then fetches the CAR from a local file or the
   profile's gateways (byte-capped stream), verifies the complete DAG against
   the DESCRIPTOR's Tree CID (the CAR's own root claim is never the authority;
   every block rehashed), then runs the install TRANSACTION: bind the
@@ -163,7 +169,7 @@ set it, and the CLI refuses it against chains that serve real state roots.
 ## Tests
 
 ```bash
-cargo test --locked    # 78 offline tests: schema/profile units (incl. strict
+cargo test --locked    # 82 offline tests: schema/profile units (incl. strict
                        # MetaEvidence CID decode + deployment-context-id
                        # variation) + counting-reader consumption proofs for
                        # the §4.1 take-bound; CAR tamper suite

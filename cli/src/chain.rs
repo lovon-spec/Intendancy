@@ -339,3 +339,55 @@ pub async fn point_check(
     }
     Ok(sp.value.to::<u8>())
 }
+
+/// Freshly prove the registry's itemCount (the `itemList` length slot) at the
+/// anchor — the COMPLETENESS half of name-based resolution (PR #1 review):
+/// proven count equality with the verified catalog establishes that the
+/// catalog's row set — and therefore its same-name candidate set — is
+/// complete at the fresh anchor, so fresh per-candidate statuses decide
+/// current uniqueness soundly.
+pub async fn point_item_count(
+    rpc_url: &str,
+    profile: &Profile,
+    anchor: &QuorumAnchor,
+) -> Result<u64> {
+    let limits = Limits::default();
+    let provider = checked_provider(rpc_url, profile).await?;
+    let slot = B256::from(U256::from(ITEM_LIST_SLOT));
+    let resp = crate::anchor::with_deadline(&format!("{rpc_url} eth_getProof"), async {
+        provider
+            .get_proof(profile.registry, vec![slot])
+            .block_id(BlockId::from(anchor.block_number))
+            .await
+            .map_err(|e| eyre!("{e}"))
+    })
+    .await?;
+    let fields = AccountFields {
+        nonce: resp.nonce,
+        balance: resp.balance,
+        storage_root: resp.storage_hash,
+        code_hash: resp.code_hash,
+    };
+    let storage_root = verify_account(
+        anchor.state_root,
+        profile.registry,
+        &fields,
+        &resp.account_proof,
+        profile.registry_code_hash,
+        &limits,
+    )?;
+    let sp = resp
+        .storage_proof
+        .iter()
+        .find(|p| p.key.as_b256() == slot)
+        .ok_or_else(|| eyre!("{rpc_url}: no storage proof for the itemList length"))?;
+    verify_slot(storage_root, slot, sp.value, &sp.proof, &limits)?;
+    if sp.value > U256::from(limits.max_items) {
+        bail!(
+            "proven itemCount {} exceeds the {}-item bound",
+            sp.value,
+            limits.max_items
+        );
+    }
+    Ok(sp.value.to::<u64>())
+}
