@@ -341,6 +341,17 @@ All three are implementation-hardening items, not protocol changes.
   the rename — the parent directory are fsynced before the finalizing lockfile
   write, so a power loss never leaves a finalized record pointing at
   non-durable content.
+- **Bounds at the TRANSPORT boundary, before any DAG work** (PR #2 re-review):
+  the CAR byte stream MUST be capped while it is read (the reference
+  implementation refuses past 64 MiB), and CAR parsing MUST enforce a
+  per-block size cap and a total block-count cap as blocks are decoded —
+  BEFORE accumulation, hashing, or any preflight walk (reference values:
+  1 MiB per block, 65,536 blocks; each block is hash-checked as it is read).
+  Per-file chunk-link counts are transitively bounded by the per-block size
+  cap on the File node and the total block bound, so a small file cannot be
+  represented by an excessive chunk flood, and the complete-DAG
+  (no-unreachable-blocks) rule operates only within these already-bounded
+  limits — it can never force unbounded reading.
 - **Bounds during preflight**, enforced as the plan grows (per entry, so they
   hold within a single directory): tree depth; file and directory counts; and the
   listing policy's aggregate tree cap counted over MATERIALIZED bytes — a shared
