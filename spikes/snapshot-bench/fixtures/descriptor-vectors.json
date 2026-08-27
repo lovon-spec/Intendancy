@@ -1,0 +1,106 @@
+{
+  "generator": "spikes/snapshot-bench/tools/gen-descriptor-vectors.mjs",
+  "encoderModule": "frontend/src/lib/encoder.ts",
+  "viemVersion": "2.47.6",
+  "node": "v25.8.2",
+  "vectors": [
+    {
+      "label": "realistic-skill",
+      "source": "frontend-encoder",
+      "columns": [
+        "vector-skill-one",
+        "A cross-implementation descriptor vector for the Gate 2 bench.",
+        "bafybeicxy5i37y7xdkjml4bfwje7rnflidxmqkk3dxcop2glgxyukj7lra",
+        "generic",
+        "",
+        ""
+      ],
+      "rlpHex": "0xf89890766563746f722d736b696c6c2d6f6e65b83e412063726f73732d696d706c656d656e746174696f6e2064657363726970746f7220766563746f7220666f7220746865204761746520322062656e63682eb83b6261667962656963787935693337793778646b6a6d6c346266776a6537726e666c6964786d716b6b336478636f7032676c677879756b6a376c72618767656e657269638080",
+      "itemIdHex": "0xa33501dc434e2435fbb8826b7f7808f95926d7875c1d15926860a57d32d519a6"
+    },
+    {
+      "label": "origin-bound",
+      "source": "frontend-encoder",
+      "columns": [
+        "vector-skill-two",
+        "Vector with a populated Origin column.",
+        "bafybeid3wo7m5lespibcwlg5h5gq4m36npt243fyv2einiopnf7ltjmloa",
+        "claude-code,generic",
+        "https://example.org/repo#bafybeibjulgikpjbkyisfjfx2b375akey6ieksakgeuiarvckkbth4g5zm",
+        ""
+      ],
+      "rlpHex": "0xf8e090766563746f722d736b696c6c2d74776fa6566563746f722077697468206120706f70756c61746564204f726967696e20636f6c756d6e2eb83b626166796265696433776f376d356c657370696263776c673568356771346d33366e70743234336679763265696e696f706e66376c746a6d6c6f6193636c617564652d636f64652c67656e65726963b85468747470733a2f2f6578616d706c652e6f72672f7265706f2362616679626569626a756c67696b706a626b796973666a66783262333735616b65793669656b73616b67657569617276636b6b6274683467357a6d80",
+      "itemIdHex": "0xe9d0a4491a4ded6d7d7af2767ae19750bce53ec2d2ecfc1c000b9a252590ff25"
+    },
+    {
+      "label": "all-empty",
+      "source": "viem-toRlp",
+      "columns": [
+        "",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "rlpHex": "0xc6808080808080",
+      "itemIdHex": "0x5460be86ce1e4ca0564b5761c6e7070d9f054b671f5404268335000806423d75"
+    },
+    {
+      "label": "unicode",
+      "source": "frontend-encoder",
+      "columns": [
+        "vector-unicode",
+        "Émoji 🛠️ and CJK 漢字 and combining á must byte-match.",
+        "bafybeiho4tbmjhjetlolphard5pcdmjivojculhnzwnvqljzny62gph474",
+        "generic",
+        "",
+        ""
+      ],
+      "rlpHex": "0xf8988e766563746f722d756e69636f6465b840c3896d6f6a6920f09f9ba0efb88f20616e6420434a4b20e6bca2e5ad9720616e6420636f6d62696e696e672061cc81206d75737420627974652d6d617463682eb83b62616679626569686f3474626d6a686a65746c6f6c7068617264357063646d6a69766f6a63756c686e7a776e76716c6a7a6e7936326770683437348767656e657269638080",
+      "itemIdHex": "0xc12dd86e5f7de205f97cf95d3a825f4a93fc93059a1b6fb8532574c83feaa297"
+    },
+    {
+      "label": "long-description",
+      "source": "frontend-encoder",
+      "columns": [
+        "vector-long",
+        "Long xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "bafybeia3mcj4ig3kry7pucr7hz7vmaq3rhhkkivxxcgz3mc4hcgcvhz6q4",
+        "generic",
+        "",
+        ""
+      ],
+      "rlpHex": "0xf9024f8b766563746f722d6c6f6e67b901f94c6f6e67207878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878b83b6261667962656961336d636a346967336b7279377075637237687a37766d6171337268686b6b6976787863677a336d63346863676376687a3671348767656e657269638080",
+      "itemIdHex": "0x1b6fb20ec92d8974109652706dccb7b8c1d6f1bc6fb78ea0b4caf93cbaaab869"
+    },
+    {
+      "label": "single-chars",
+      "source": "viem-toRlp",
+      "columns": [
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+        ""
+      ],
+      "rlpHex": "0xc6616263646580",
+      "itemIdHex": "0x9a7de462bf2e4f110e48479ad1cb0e69125c525194feec8f39a78b11e2b8c9d1"
+    },
+    {
+      "label": "reserved-nonempty-encoding-only",
+      "source": "viem-toRlp",
+      "columns": [
+        "vector-reserved",
+        "Reserved column populated (policy-invalid, codec-valid).",
+        "bafybeicujfxadxfwulsihzwtz2qck7rucfo4ezx2fuskp5oamtddn575mi",
+        "generic",
+        "",
+        "v2-not-allowed"
+      ],
+      "rlpHex": "0xf89f8f766563746f722d7265736572766564b838526573657276656420636f6c756d6e20706f70756c617465642028706f6c6963792d696e76616c69642c20636f6465632d76616c6964292eb83b6261667962656963756a66786164786677756c7369687a77747a3271636b37727563666f34657a78326675736b70356f616d7464646e3537356d698767656e65726963808e76322d6e6f742d616c6c6f776564",
+      "itemIdHex": "0xbf8dd0156401c73bafadff8dab991fb5b47f1ac2686c39d62743ffbbb5c44021"
+    }
+  ]
+}

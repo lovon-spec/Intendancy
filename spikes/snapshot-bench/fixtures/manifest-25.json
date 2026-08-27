@@ -1,0 +1,11 @@
+{
+  "rpcUrl": "http://127.0.0.1:8547",
+  "chainId": 100,
+  "registry": "0x2a25ec70329918d13ec23477716a159d063735d0",
+  "registryCodeHash": "0x5a6cf79325018f60d2aa63ca57c5396ae760b2ae57d4572c631778b3e9085d7d",
+  "items": 25,
+  "anchorBlock": 47881808,
+  "anchorBlockHash": "0x53fd6834dd2f028dcb95fbf68c8f2ff3fb64a984e671140ad76480cc5c18a4bd",
+  "anchorStateRoot": "0xf00679c43b3ab8f7c8b62ae5ffd7eaa5cfd29113bc72f4945d49e8b2d502b8c2",
+  "seedWallSecs": 0.073164375
+}
