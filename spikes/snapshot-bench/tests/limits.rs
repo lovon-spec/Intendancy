@@ -327,3 +327,23 @@ fn file_boundary_rejects_oversized_gzip_file() {
         "{err:#}"
     );
 }
+
+#[test]
+fn oversized_account_proof_rejects_at_the_wire_boundary() {
+    // PR #3 re-review: "0x" account-proof elements amplify ~14x from JSON
+    // bytes to heap; the deserializer itself bounds the collection so the
+    // reject happens during parsing, before the flood materializes.
+    let (_manifest, snapshot) = fixtures();
+    let mut v = serde_json::to_value(&snapshot).unwrap();
+    v["proofs"]["account"] =
+        serde_json::Value::Array(vec![serde_json::Value::String("0x".into()); 500]);
+    let raw = serde_json::to_vec(&v).unwrap();
+    let err = format!(
+        "{:#}",
+        read_snapshot_bounded(&raw, &Limits::default()).unwrap_err()
+    );
+    assert!(err.contains("account proof exceeds"), "{err}");
+    // The honest fixture still round-trips (control).
+    let raw = serde_json::to_vec(&snapshot).unwrap();
+    read_snapshot_bounded(&raw, &Limits::default()).unwrap();
+}

@@ -132,10 +132,52 @@ pub struct AccountFields {
     pub code_hash: B256,
 }
 
+/// Hard ceiling on account-proof nodes accepted at DESERIALIZATION time
+/// (PR #3 re-review): a `"0x"` element costs ~4 JSON bytes but tens of heap
+/// bytes, so an in-cap document could otherwise allocate gigabytes before
+/// `verify`'s count checks run. 128 exceeds every honest path (secure-trie
+/// paths are ≤ 65 nodes) while capping the amplification at the wire.
+pub const MAX_ACCOUNT_PROOF_NODES_WIRE: usize = 128;
+
+fn bounded_account_proof<'de, D>(de: D) -> Result<Vec<Bytes>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct V;
+    impl<'de> serde::de::Visitor<'de> for V {
+        type Value = Vec<Bytes>;
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(
+                f,
+                "an account proof of at most {MAX_ACCOUNT_PROOF_NODES_WIRE} nodes"
+            )
+        }
+        fn visit_seq<A: serde::de::SeqAccess<'de>>(
+            self,
+            mut seq: A,
+        ) -> Result<Self::Value, A::Error> {
+            let mut out = Vec::new();
+            while let Some(node) = seq.next_element::<Bytes>()? {
+                if out.len() >= MAX_ACCOUNT_PROOF_NODES_WIRE {
+                    return Err(serde::de::Error::custom(format!(
+                        "account proof exceeds {MAX_ACCOUNT_PROOF_NODES_WIRE} nodes at the \
+                         wire boundary"
+                    )));
+                }
+                out.push(node);
+            }
+            Ok(out)
+        }
+    }
+    de.deserialize_seq(V)
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Proofs {
     pub account_fields: AccountFields,
+    /// Bounded at deserialization — see `MAX_ACCOUNT_PROOF_NODES_WIRE`.
+    #[serde(deserialize_with = "bounded_account_proof")]
     pub account: Vec<Bytes>,
     /// Deduplicated Merkle-Patricia nodes keyed by keccak256(node).
     pub nodes: BTreeMap<B256, Bytes>,
