@@ -48,6 +48,8 @@ if ! command -v forge >/dev/null 2>&1 || ! forge --version | grep -Fq 'Version: 
 fi
 
 touch "$HOME/.bashrc"
+# Keep the variables literal so they expand in each future agent shell.
+# shellcheck disable=SC2016
 grep -Fqx 'export PATH="$HOME/.foundry/bin:$PATH"' "$HOME/.bashrc" || \
   printf '%s\n' 'export PATH="$HOME/.foundry/bin:$PATH"' >> "$HOME/.bashrc"
 
