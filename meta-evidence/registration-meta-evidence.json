@@ -3,7 +3,10 @@
   "description": "Someone requested to add an agent skill to the Intendancy Registry.",
   "question": "Does this skill comply with the Intendancy listing policy?",
   "rulingOptions": {
-    "titles": ["Yes, Add It", "No, Don't Add It"],
+    "titles": [
+      "Yes, Add It",
+      "No, Don't Add It"
+    ],
     "descriptions": [
       "Select this if the skill complies with all acceptance criteria in the listing policy and should be added to the registry.",
       "Select this if the skill violates one or more acceptance criteria and should not be added."
@@ -11,7 +14,7 @@
   },
   "category": "Curated Lists",
   "fileURI": "/ipfs/TODO_LISTING_POLICY_CID/listing-policy.pdf",
-  "dynamicScriptURI": "",
+  "evidenceDisplayInterfaceURI": "/ipfs/TODO_EVIDENCE_DISPLAY_CID/index.html",
   "metadata": {
     "tcrTitle": "Intendancy Skills Registry",
     "tcrDescription": "An optimistic Kleros-curated registry of AI agent skills.",
@@ -59,5 +62,13 @@
     "requireRemovalEvidence": true,
     "isTCRofTCRs": false,
     "relTcrDisabled": true
-  }
+  },
+  "_v": "1.0.0",
+  "evidenceDisplayInterfaceRequiredParams": [
+    "disputeID",
+    "arbitrableContractAddress",
+    "arbitratorContractAddress",
+    "arbitrableChainID",
+    "arbitrableJsonRpcUrl"
+  ]
 }
