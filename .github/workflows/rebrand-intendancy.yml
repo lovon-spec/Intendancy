@@ -83,8 +83,6 @@ jobs:
                   path.write_text(updated, encoding="utf-8", newline="")
                   changed.append(name)
 
-          # Rename tracked files or directories bearing the deprecated product name.
-          # Process deepest paths first so a parent rename cannot invalidate a child path.
           renamed: list[tuple[str, str]] = []
           for old in sorted(paths, key=lambda value: (value.count("/"), len(value)), reverse=True):
               if not pattern.search(old):
@@ -105,7 +103,6 @@ jobs:
               print(f"Skipped {len(skipped_binary)} binary or non-UTF-8 tracked files.")
           PY
 
-          # This workflow is a one-time migration scaffold, not permanent project CI.
           rm -- .github/workflows/rebrand-intendancy.yml
 
       - name: Finalize product identity and compatibility vectors
@@ -127,10 +124,9 @@ jobs:
                   raise RuntimeError(f"expected one occurrence in {path}, found {count}: {old!r}")
               file.write_text(text.replace(old, new), encoding="utf-8", newline="")
 
-          # The deployment-context domain separator is product-scoped. The project has
-          # no production deployment or frozen wire format, so the rebrand intentionally
-          # establishes and pins the newly computed V1 vector rather than retaining a
-          # hidden legacy brand identifier.
+          # This repository has no production deployment or frozen wire format.
+          # Changing the product-scoped domain separator therefore intentionally
+          # establishes a new deterministic V1 deployment-context vector.
           replace_once(
               "cli/src/profile.rs",
               "0x253f2981e5d5c11df649ad0fcf6418bf61cdc0b2d902f9100466eee3dd2350aa",
@@ -183,15 +179,15 @@ jobs:
           replace_once(
               "frontend/src/components/layout/Header.tsx",
               """          <Link to=\"/\" className=\"text-lg font-bold text-gray-900 hover:text-gray-700\">
-                        Intendancy
-                      </Link>""",
+                      Intendancy
+                    </Link>""",
               """          <Link
-                        to=\"/\"
-                        className=\"flex items-center gap-2 text-lg font-bold text-gray-900 hover:text-gray-700\"
-                      >
-                        <img src=\"/favicon.svg\" alt=\"\" aria-hidden=\"true\" className=\"h-7 w-7\" />
-                        <span>Intendancy</span>
-                      </Link>""",
+                      to=\"/\"
+                      className=\"flex items-center gap-2 text-lg font-bold text-gray-900 hover:text-gray-700\"
+                    >
+                      <img src=\"/favicon.svg\" alt=\"\" aria-hidden=\"true\" className=\"h-7 w-7\" />
+                      <span>Intendancy</span>
+                    </Link>""",
           )
 
           replace_once(
