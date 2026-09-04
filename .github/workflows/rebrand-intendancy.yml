@@ -1,0 +1,182 @@
+name: One-time Intendancy rebrand
+
+on:
+  push:
+    branches:
+      - chore/rebrand-intendancy
+
+permissions:
+  contents: write
+
+jobs:
+  rebrand:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Set up Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Rebrand tracked text and paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from __future__ import annotations
+
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+
+          pattern = re.compile(r"intendhub", re.IGNORECASE)
+          exemptions = {"docs/BRAND.md"}
+
+          def replacement(match: re.Match[str]) -> str:
+              value = match.group(0)
+              if value.isupper():
+                  return "INTENDANCY"
+              if value.islower():
+                  return "intendancy"
+              return "Intendancy"
+
+          raw_paths = subprocess.check_output(["git", "ls-files", "-z"])
+          paths = [p.decode("utf-8") for p in raw_paths.split(b"\0") if p]
+          changed: list[str] = []
+          skipped_binary: list[str] = []
+
+          for name in paths:
+              if name in exemptions:
+                  continue
+              path = Path(name)
+              if not path.is_file():
+                  continue
+              data = path.read_bytes()
+              if b"\0" in data:
+                  skipped_binary.append(name)
+                  continue
+              try:
+                  text = data.decode("utf-8")
+              except UnicodeDecodeError:
+                  skipped_binary.append(name)
+                  continue
+              updated = pattern.sub(replacement, text)
+              if updated != text:
+                  path.write_text(updated, encoding="utf-8", newline="")
+                  changed.append(name)
+
+          # Rename tracked files or directories bearing the deprecated product name.
+          # Process deepest paths first so a parent rename cannot invalidate a child path.
+          renamed: list[tuple[str, str]] = []
+          for old in sorted(paths, key=lambda value: (value.count("/"), len(value)), reverse=True):
+              if not pattern.search(old):
+                  continue
+              new = pattern.sub(replacement, old)
+              if old == new or not Path(old).exists():
+                  continue
+              Path(new).parent.mkdir(parents=True, exist_ok=True)
+              subprocess.run(["git", "mv", old, new], check=True)
+              renamed.append((old, new))
+
+          print(f"Updated product naming in {len(changed)} text files.")
+          for name in changed:
+              print(f"  text: {name}")
+          for old, new in renamed:
+              print(f"  path: {old} -> {new}")
+          if skipped_binary:
+              print(f"Skipped {len(skipped_binary)} binary or non-UTF-8 tracked files.")
+          PY
+
+          # This workflow is a one-time migration scaffold, not permanent project CI.
+          rm -- .github/workflows/rebrand-intendancy.yml
+
+      - name: Verify naming invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if git grep -Iin -E 'intendhub' -- ':!docs/BRAND.md'; then
+            echo 'Deprecated product name remains outside docs/BRAND.md.' >&2
+            exit 1
+          fi
+
+          if git ls-files | grep -i 'intendhub'; then
+            echo 'A tracked path still contains the deprecated product name.' >&2
+            exit 1
+          fi
+
+          cmp docs/listing-policy.md frontend/public/listing-policy.md
+          git diff --check
+
+      - name: Validate contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd contracts
+          forge fmt --check
+          forge test
+
+      - name: Validate frontend
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd frontend
+          npm ci
+          npm run lint
+          npm run build
+
+      - name: Validate intend CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd cli
+          cargo fmt --check
+          cargo clippy --all-targets --locked -- -D warnings
+          cargo test --locked
+
+      - name: Validate Gnosis anchor spike
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd spikes/gnosis-anchor
+          cargo fmt --check
+          cargo clippy --all-targets --locked -- -D warnings
+          cargo test --locked
+
+      - name: Validate snapshot benchmark spike
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd spikes/snapshot-bench
+          cargo fmt --check
+          cargo clippy --all-targets --locked -- -D warnings
+          cargo test --locked
+
+      - name: Commit the completed rebrand
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'chore: rebrand Intendhub as Intendancy'
+          git push origin HEAD:chore/rebrand-intendancy
