@@ -5,7 +5,11 @@ import "./IArbitrable.sol";
 
 /// @title ERC-792 Arbitrator interface (compatible with Kleros)
 interface IArbitrator {
-    enum DisputeStatus { Waiting, Appealable, Solved }
+    enum DisputeStatus {
+        Waiting,
+        Appealable,
+        Solved
+    }
 
     event DisputeCreation(uint256 indexed _disputeID, IArbitrable indexed _arbitrable);
     event AppealPossible(uint256 indexed _disputeID, IArbitrable indexed _arbitrable);

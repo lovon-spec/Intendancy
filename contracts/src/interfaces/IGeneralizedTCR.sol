@@ -6,25 +6,25 @@ import "./IArbitrator.sol";
 /// @title Interface for Kleros GeneralizedTCR
 /// @dev Covers the public functions we need for testing. Not exhaustive.
 interface IGeneralizedTCR {
-    enum Status { Absent, Registered, RegistrationRequested, ClearingRequested }
-    enum Party { None, Requester, Challenger }
+    enum Status {
+        Absent,
+        Registered,
+        RegistrationRequested,
+        ClearingRequested
+    }
+    enum Party {
+        None,
+        Requester,
+        Challenger
+    }
 
     // --- Events ---
     event ItemSubmitted(
-        bytes32 indexed _itemID,
-        address indexed _submitter,
-        uint256 indexed _evidenceGroupID,
-        bytes _data
+        bytes32 indexed _itemID, address indexed _submitter, uint256 indexed _evidenceGroupID, bytes _data
     );
-    event RequestSubmitted(
-        bytes32 indexed _itemID,
-        uint256 indexed _requestIndex,
-        Status _requestType
-    );
+    event RequestSubmitted(bytes32 indexed _itemID, uint256 indexed _requestIndex, Status _requestType);
     event RequestEvidenceGroupID(
-        bytes32 indexed _itemID,
-        uint256 indexed _requestIndex,
-        uint256 indexed _evidenceGroupID
+        bytes32 indexed _itemID, uint256 indexed _requestIndex, uint256 indexed _evidenceGroupID
     );
     event ItemStatusChange(
         bytes32 indexed _itemID,
@@ -44,11 +44,13 @@ interface IGeneralizedTCR {
 
     // --- Views ---
     function getItemInfo(bytes32 _itemID)
-        external view
+        external
+        view
         returns (bytes memory data, Status status, uint256 numberOfRequests);
 
     function getRequestInfo(bytes32 _itemID, uint256 _request)
-        external view
+        external
+        view
         returns (
             bool disputed,
             uint256 disputeID,

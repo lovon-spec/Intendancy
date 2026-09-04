@@ -7,7 +7,7 @@
 
 ## Why this is next
 
-[RFC 0001 §7](../rfcs/0001-intendhub-v1-decision.md) gates the snapshot wire-format and
+[RFC 0001 §7](../rfcs/0001-intendancy-v1-decision.md) gates the snapshot wire-format and
 implementation freeze on two validations. Gate 1 (the Gnosis consensus anchor) is signed
 off. This brief covers Gate 2:
 

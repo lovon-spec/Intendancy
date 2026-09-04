@@ -1,4 +1,4 @@
-> **Supersession notice:** This is historical review material. [RFC 0001: Intendhub V1 Owner Decision](./0001-intendhub-v1-decision.md) is canonical; any conflicting conclusion here is superseded.
+> **Supersession notice:** This is historical review material. [RFC 0001: Intendancy V1 Owner Decision](./0001-intendancy-v1-decision.md) is canonical; any conflicting conclusion here is superseded.
 
 # Review of RFC 0001 — Claude
 
@@ -11,7 +11,7 @@
 
 **Sound abstraction, over-generalized as a V1 plan.** The layer the RFC identifies is real: applications consume trusted JSON projections of chain state everywhere (token lists, tags, package indexes), and nobody verifies source, completeness, or transformation. "Light-client-backed verifiable materializer" is the correct technical name; keep it and drop "reverse oracle" (oracles carry facts *onto* chains; this is a light client with projections, and the metaphor will mislead).
 
-But the plan's gravity pulls toward building the generic framework before the wedge has a single production consumer. The failure mode has a name — inner-platform effect — and the RFC's own §13 sequence flirts with it (foundation RFC first; T2CR and Token Lists adapters scheduled before the package manager has users). The abstraction should be **extracted from a working Intendhub pipeline, not specified ahead of it**. Concretely: V1 ships one binary; the `intend` library boundary is drawn where the code naturally cleaves (consensus client, MPT/proof verification, CAR/DAG verification — all genuinely generic); the adapter *interface* and capability *taxonomy* freeze only after the second real adapter exists. Writing the foundation RFC as a document is cheap and fine; implementing to it before the wedge ships is the mistake to refuse.
+But the plan's gravity pulls toward building the generic framework before the wedge has a single production consumer. The failure mode has a name — inner-platform effect — and the RFC's own §13 sequence flirts with it (foundation RFC first; T2CR and Token Lists adapters scheduled before the package manager has users). The abstraction should be **extracted from a working Intendancy pipeline, not specified ahead of it**. Concretely: V1 ships one binary; the `intend` library boundary is drawn where the code naturally cleaves (consensus client, MPT/proof verification, CAR/DAG verification — all genuinely generic); the adapter *interface* and capability *taxonomy* freeze only after the second real adapter exists. Writing the foundation RFC as a document is cheap and fine; implementing to it before the wedge ships is the mistake to refuse.
 
 ## 2. Strongest objections
 
@@ -25,7 +25,7 @@ But the plan's gravity pulls toward building the generic framework before the we
 
 ## 4. Component boundary (revised)
 
-Keep the three-way *conceptual* split (`intend` / Intendhub / Intendant). Reject the three-way *implementation* split for V1. One repository, one binary, three internal layers with the future seam lines respected:
+Keep the three-way *conceptual* split (`intend` / Intendancy / Intendant). Reject the three-way *implementation* split for V1. One repository, one binary, three internal layers with the future seam lines respected:
 
 - **Generic now** (because analogues already exist and the code is inherently reusable): consensus light client, EIP-1186/MPT verification, CAR/UnixFS verification, bundle envelope parsing.
 - **Concrete now, generalize later**: the Classic-GTCR adapter (hardcoded, with its declarative core factored as data), the skills-catalog projection (the only projection), install/audit/lockfile logic.
@@ -109,7 +109,7 @@ This gives safe automatic upgrade, rollback protection, and supersession with ze
 
 **Q12 — cuts?** As §§5–6: cut T2CR, LGTCR adapter, Token Lists, projection manifests, stateless EVM, taxonomy-as-API, `upgrade`-before-lineage, "reverse oracle" branding. The wedge is Intendant installing skills it can prove; everything that doesn't shorten the path to that is V2.
 
-**Q13 — document split?** Two RFCs are fine, with an extraction discipline: write the Intendhub profile RFC first (it has a customer), and let the foundation RFC contain only what the profile actually consumed, plus the frozen naming of the three verification dimensions. A foundation RFC written ahead of its only consumer will speculate; one extracted from it will be true.
+**Q13 — document split?** Two RFCs are fine, with an extraction discipline: write the Intendancy profile RFC first (it has a customer), and let the foundation RFC contain only what the profile actually consumed, plus the frozen naming of the three verification dimensions. A foundation RFC written ahead of its only consumer will speculate; one extracted from it will be true.
 
 ---
 

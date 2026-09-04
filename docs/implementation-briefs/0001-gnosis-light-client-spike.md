@@ -7,15 +7,15 @@
 
 ## Why this is next
 
-Intendhub V1 depends on one claim that is still unproven in this repository: a small consumer can start from an explicit Gnosis weak-subjectivity checkpoint, verify consensus light-client updates, obtain a finalized execution `stateRoot`, and use that root to verify the Classic GTCR account and storage proofs supplied by an untrusted provider.
+Intendancy V1 depends on one claim that is still unproven in this repository: a small consumer can start from an explicit Gnosis weak-subjectivity checkpoint, verify consensus light-client updates, obtain a finalized execution `stateRoot`, and use that root to verify the Classic GTCR account and storage proofs supplied by an untrusted provider.
 
-This is the highest-risk architecture assumption in [RFC 0001](../rfcs/0001-intendhub-v1-decision.md). Test it before implementing the package manager or freezing the [snapshot wire format](../verified-snapshot-spec.md).
+This is the highest-risk architecture assumption in [RFC 0001](../rfcs/0001-intendancy-v1-decision.md). Test it before implementing the package manager or freezing the [snapshot wire format](../verified-snapshot-spec.md).
 
 Gnosis currently exposes a consensus RPC and documents 5-second slots, 16-slot epochs, and checkpoint-sync infrastructure. Its consensus specification and fork schedule differ from Ethereum mainnet. Helios is a plausible Rust starting point, but its current Gnosis compatibility must be demonstrated rather than assumed. Initial source inspection indicates that current Helios still selects an Ethereum `MainnetConsensusSpec` internally; a custom TOML file alone does not change SSZ bounds. Verify this against a pinned revision, then make the smallest isolated, upstreamable Gnosis preset patch or document a better maintained primitive.
 
 Primary references:
 
-- [Intendhub V1 decision](../rfcs/0001-intendhub-v1-decision.md)
+- [Intendancy V1 decision](../rfcs/0001-intendancy-v1-decision.md)
 - [Draft verified-snapshot specification](../verified-snapshot-spec.md)
 - [Gnosis mainnet parameters and endpoints](https://docs.gnosischain.com/about/networks/mainnet)
 - [Gnosis consensus/execution specifications](https://github.com/gnosischain/specs)

@@ -1,6 +1,10 @@
-# Intendancy
+<p align="center">
+  <img src="assets/intendancy-mark.svg" width="112" alt="Intendancy mark" />
+</p>
 
-**A verifiable, policy-governed registry for agent skills.**
+<h1 align="center">Intendancy</h1>
+
+<p align="center"><strong>A verifiable, policy-governed registry for agent skills.</strong></p>
 
 Intendancy gives Intendant and other agent runtimes a package catalog whose membership and artifact integrity can be checked without trusting a marketplace backend, CDN, IPFS gateway, indexer, or execution RPC.
 
@@ -64,6 +68,7 @@ cd frontend && npm ci && npm run lint && npm run build
 cd cli && cargo fmt --check && cargo clippy --all-targets --locked -- -D warnings && cargo test --locked
 cd spikes/gnosis-anchor && cargo fmt --check && cargo clippy --all-targets --locked -- -D warnings && cargo test --locked
 cd spikes/snapshot-bench && cargo fmt --check && cargo clippy --all-targets --locked -- -D warnings && cargo test --locked
+./scripts/check-brand.sh
 cmp docs/listing-policy.md frontend/public/listing-policy.md
 ```
 

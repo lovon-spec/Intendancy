@@ -1,7 +1,7 @@
 {
-  "title": "Add a skill to Intendhub Registry",
-  "description": "Someone requested to add an agent skill to the Intendhub Registry.",
-  "question": "Does this skill comply with the Intendhub listing policy?",
+  "title": "Add a skill to Intendancy Registry",
+  "description": "Someone requested to add an agent skill to the Intendancy Registry.",
+  "question": "Does this skill comply with the Intendancy listing policy?",
   "rulingOptions": {
     "titles": ["Yes, Add It", "No, Don't Add It"],
     "descriptions": [
@@ -13,9 +13,9 @@
   "fileURI": "/ipfs/TODO_LISTING_POLICY_CID/listing-policy.pdf",
   "dynamicScriptURI": "",
   "metadata": {
-    "tcrTitle": "Intendhub Skills Registry",
+    "tcrTitle": "Intendancy Skills Registry",
     "tcrDescription": "An optimistic Kleros-curated registry of AI agent skills.",
-    "logoURI": "/ipfs/TODO_LOGO_CID/intendhub-logo.svg",
+    "logoURI": "/ipfs/TODO_LOGO_CID/intendancy-logo.svg",
     "columns": [
       {
         "label": "Name",

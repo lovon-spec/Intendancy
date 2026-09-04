@@ -1,4 +1,4 @@
-> **Supersession notice:** This is historical review material. [RFC 0001: Intendhub V1 Owner Decision](./0001-intendhub-v1-decision.md) is canonical; any conflicting conclusion here is superseded.
+> **Supersession notice:** This is historical review material. [RFC 0001: Intendancy V1 Owner Decision](./0001-intendancy-v1-decision.md) is canonical; any conflicting conclusion here is superseded.
 
 # RFC 0001 Review Brief: Intend — Verifiable Onchain Data Egress
 
@@ -23,7 +23,7 @@ Pay particular attention to the questions in section 12.
 
 ## 2. Motivation
 
-Intendhub began as a trust layer for Intendant, an agentic development environment that needs to discover and install AI-agent skills and eventually plugins without trusting a marketplace, mutable repository reference, hosted indexer, CDN, RPC, or package publisher.
+Intendancy began as a trust layer for Intendant, an agentic development environment that needs to discover and install AI-agent skills and eventually plugins without trusting a marketplace, mutable repository reference, hosted indexer, CDN, RPC, or package publisher.
 
 The Kleros investigation exposed a more general missing layer. Onchain registries may be authoritative, but real applications normally consume convenient JSON produced by trusted infrastructure. Examples include `t2crtokens.eth`, Token Lists, Scout data, address tags, and package indexes. Consumers commonly fetch JSON over HTTPS or through an IPFS gateway and schema-validate it; they do not prove that it is a complete and correct projection of finalized onchain state.
 
@@ -36,7 +36,7 @@ The proposed product boundary is therefore broader than one skills registry:
 ## 3. Proposed product split
 
 - **`intend`** — open protocol, library, and CLI: consensus light clients, state-proof verification, registry adapters, proof bundles, deterministic projections, and content verification.
-- **Intendhub** — the first registry/application profile, initially curating AI-agent skills through an unmodified Classic Kleros GeneralizedTCR on Gnosis Chain. It may also operate mirrors and proof-bundle generation, but clients do not trust those services.
+- **Intendancy** — the first registry/application profile, initially curating AI-agent skills through an unmodified Classic Kleros GeneralizedTCR on Gnosis Chain. It may also operate mirrors and proof-bundle generation, but clients do not trust those services.
 - **Intendant** — the first consuming environment and package-manager integration.
 
 This naming is provisional. The architectural separation is the proposed decision.
@@ -123,7 +123,7 @@ An adapter is locally recognized and version-pinned. It must not be executable l
 
 Initial conformance adapters are proposed:
 
-1. **Classic GeneralizedTCR / Gnosis** — `historical-complete`; used by Intendhub.
+1. **Classic GeneralizedTCR / Gnosis** — `historical-complete`; used by Intendancy.
 2. **Original ArbitrableTokenList / Ethereum** — `historical-complete`; a second adapter proving the abstraction is not skills-specific.
 3. **LightGeneralizedTCR / Gnosis** — `sound-only`; included rows can be verified, catalog completeness cannot.
 
@@ -169,9 +169,9 @@ For content-addressed artifacts, `intend` should use a trustless gateway/CAR pat
 
 Availability remains operational. Multiple providers, mirrors, authors, and archivers improve it, but a valid proof cannot force anyone to serve bytes.
 
-## 10. Intendhub skills/package profile
+## 10. Intendancy skills/package profile
 
-The proposed V1 source is an unmodified Classic GeneralizedTCR deployed through the official Kleros factory on Gnosis. The descriptor commits to a complete IPFS UnixFS skill-tree CID plus compact metadata. Skill bytes remain offchain and reviewability relies pragmatically on the Kleros/Intendhub ingestion and CDN path.
+The proposed V1 source is an unmodified Classic GeneralizedTCR deployed through the official Kleros factory on Gnosis. The descriptor commits to a complete IPFS UnixFS skill-tree CID plus compact metadata. Skill bytes remain offchain and reviewability relies pragmatically on the Kleros/Intendancy ingestion and CDN path.
 
 Proposed package-manager flow:
 
@@ -209,16 +209,16 @@ For current LGTCR, neither exists. `intend` must report `sound-only`, require ex
 10. What is the correct pragmatic review-period availability rule that avoids both dark submissions and cure/bait griefing as much as possible?
 11. Are deterministic projection manifests sufficient to replace trusted exporters such as Atlas, especially when outputs contain lossy transformations or enrichment?
 12. Which proposed components should be removed from V1 to avoid building a generic data framework before proving the Intendant package-manager wedge?
-13. Should the project use one foundation RFC plus a dependent Intendhub profile RFC, or a different document split?
+13. Should the project use one foundation RFC plus a dependent Intendancy profile RFC, or a different document split?
 
 ## 13. Proposed RFC and implementation sequence
 
 1. Architecture review of this brief by Claude and Codex.
 2. Accept a foundation RFC for the core guarantees, adapter contract, bundle envelope, capability taxonomy, and light-client boundary.
-3. Accept a dependent Intendhub skills/package RFC covering descriptor schema, review-period DA, install/quarantine/upgrade semantics, and lockfiles.
+3. Accept a dependent Intendancy skills/package RFC covering descriptor schema, review-period DA, install/quarantine/upgrade semantics, and lockfiles.
 4. Spike the embedded Gnosis light client, the highest implementation risk.
 5. Implement the generic verifier envelope and Classic adapter.
-6. Implement the Intendhub package profile and Intendant integration.
+6. Implement the Intendancy package profile and Intendant integration.
 7. Add the literal Ethereum T2CR adapter as the second complete adapter.
 8. Add LGTCR `sound-only` support and a Token Lists projection.
 9. Pursue current-set and transition commitments upstream.

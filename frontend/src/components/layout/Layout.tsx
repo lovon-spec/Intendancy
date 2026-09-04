@@ -9,7 +9,7 @@ export function Layout() {
         <Outlet />
       </main>
       <footer className="border-t border-gray-200 px-6 py-4 text-center text-xs text-gray-400">
-        Intendhub - Curated by the community via Kleros on Gnosis Chain
+        Intendancy - Curated by the community via Kleros on Gnosis Chain
       </footer>
     </div>
   );

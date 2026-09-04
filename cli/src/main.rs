@@ -1,4 +1,4 @@
-//! `intend` — Intendhub consumer CLI (pre-1.0).
+//! `intend` — Intendancy consumer CLI (pre-1.0).
 //!
 //! Anchor strength, enumeration scope, and freshness are reported SEPARATELY on
 //! every command (repo invariant): this build anchors via header quorum only

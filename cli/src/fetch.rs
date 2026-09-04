@@ -245,7 +245,7 @@ mod tests {
 
     #[test]
     fn raw_source_consumption_stops_at_decoded_cap_plus_one() {
-        let (r, consumed) = Counting::new([b'{', b'"'], b' ');
+        let (r, consumed) = Counting::new(*b"{\"", b' ');
         let err = read_snapshot_body(r, &limits(1 << 30, 4096)).unwrap_err();
         assert!(format!("{err:#}").contains("cap"), "{err:#}");
         assert_eq!(consumed.get(), 4097);
@@ -254,7 +254,7 @@ mod tests {
     #[test]
     fn degenerate_caps_bound_even_the_sniff_read() {
         // Both caps zero: at most max_cap + 1 = 1 byte is ever read.
-        let (r, consumed) = Counting::new([b'x', b'x'], b'x');
+        let (r, consumed) = Counting::new(*b"xx", b'x');
         let err = read_snapshot_body(r, &limits(0, 0)).unwrap_err();
         assert!(format!("{err:#}").contains("cap"), "{err:#}");
         assert_eq!(consumed.get(), 1);

@@ -7,7 +7,7 @@ import {Vm} from "forge-std/Vm.sol";
 import {IGTCRFactory} from "../src/interfaces/IGTCRFactory.sol";
 import {MockArbitrator} from "../src/mock/MockArbitrator.sol";
 
-/// @title Deploy Intendhub Registry
+/// @title Deploy Intendancy Registry
 /// @dev Deploys an unmodified GeneralizedTCR via the official GTCRFactory.
 ///      Production mode is deliberately fail-closed and Gnosis-specific.
 contract DeployRegistry is Script {
@@ -77,7 +77,7 @@ contract DeployRegistry is Script {
 
         vm.stopBroadcast();
 
-        console.log("=== Intendhub Registry Deployed ===");
+        console.log("=== Intendancy Registry Deployed ===");
         console.log("Predicted registry (verify mined NewGTCR receipt):", predictedRegistry);
         console.log("Arbitrator:", config.arbitrator);
         console.log("Governor:", config.governor);

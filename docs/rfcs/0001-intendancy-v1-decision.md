@@ -1,14 +1,14 @@
-# RFC 0001: Intendhub V1 Owner Decision
+# RFC 0001: Intendancy V1 Owner Decision
 
 **Status:** Accepted architecture; implementation parameters remain provisional<br>
 **Date:** 2026-08-23<br>
-**Scope:** Intendhub's first skills registry and the `intend` package-manager verifier
+**Scope:** Intendancy's first skills registry and the `intend` package-manager verifier
 
 This record is the canonical disposition of the RFC 0001 architecture brief and its reviews. The review documents remain useful design history, but any conclusion in them that conflicts with this record is superseded.
 
 ## 1. V1 product boundary
 
-V1 proves the concrete Intendhub/Intendant package-manager path before generalizing the machinery:
+V1 proves the concrete Intendancy/Intendant package-manager path before generalizing the machinery:
 
 - one unmodified Classic Kleros GeneralizedTCR, deployed through the official factory on Gnosis Chain;
 - one skills-registry verifier profile with locally pinned chain, contract, bytecode, storage-layout, descriptor, and policy bindings;

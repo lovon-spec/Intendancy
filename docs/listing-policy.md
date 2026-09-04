@@ -1,7 +1,7 @@
-# Intendhub Skills Registry — Listing Policy
+# Intendancy Skills Registry — Listing Policy
 
 **Version**: 2.1 (draft; pre-launch amendment 2026-08-24: symlinks prohibited in trees, executable bits non-semantic — owner decision)
-**Registry**: Intendhub Skills Registry (Classic GeneralizedTCR)
+**Registry**: Intendancy Skills Registry (Classic GeneralizedTCR)
 **Chain**: Gnosis Chain (chain ID 100)
 **Registry address**: `[TO BE SET AT DEPLOYMENT]`
 
