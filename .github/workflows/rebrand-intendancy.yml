@@ -149,6 +149,7 @@ jobs:
         run: |
           set -euo pipefail
           cd cli
+          cargo clippy --fix --all-targets --locked --allow-dirty --allow-staged -- -D warnings
           cargo fmt --check
           cargo clippy --all-targets --locked -- -D warnings
           cargo test --locked
