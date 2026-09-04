@@ -39,6 +39,20 @@ An **intendancy** is the office, function, body, or administrative domain of an 
 
 This is a product pair, not three artificially equal siblings. **Intendment** remains linguistically related but architecturally separate.
 
+## Visual identity
+
+Intendancy is a visual sibling of Intendant, not a recolored clone. The two marks share the visual grammar of the governed house:
+
+- a charcoal plate that works on light and dark surfaces;
+- a graphite proscenium arch;
+- a sky-blue serif **I**;
+- warm gold for delegated authority and policy; and
+- green for verified, admissible state.
+
+The distinction carries the product boundary. **Intendant** crosses the I with a conductor’s baton and fans outward to orchestrated agents. **Intendancy** crosses the same I with horizontal registry-ledger rows terminating in verified-status nodes. One runs the house; the other represents its governed capability domain.
+
+`assets/intendancy-mark.svg` is the canonical master. `frontend/public/favicon.svg` and `meta-evidence/intendancy-logo.svg` must remain byte-identical copies until a build step replaces that duplication. The brand check enforces this invariant.
+
 ## Technical naming rules
 
 1. Rename product-facing `intendhub` identifiers to `intendancy`, including package names, profile names, test types, fixture labels, frontend titles, documentation, and repository-local URLs.

@@ -16,7 +16,11 @@ fi
 
 grep -Fq '"name": "intendancy-frontend"' frontend/package.json
 grep -Fq '<title>Intendancy — Verifiable Agent Skill Registry</title>' frontend/index.html
+grep -Fq '<meta name="theme-color" content="#11111b" />' frontend/index.html
 grep -Fq 'Intendancy' frontend/src/components/layout/Header.tsx
+grep -Fq '#89b4fa' assets/intendancy-mark.svg
+grep -Fq '#f9e2af' assets/intendancy-mark.svg
+grep -Fq '#a6e3a1' assets/intendancy-mark.svg
 cmp docs/listing-policy.md frontend/public/listing-policy.md
 cmp assets/intendancy-mark.svg frontend/public/favicon.svg
 cmp assets/intendancy-mark.svg meta-evidence/intendancy-logo.svg
