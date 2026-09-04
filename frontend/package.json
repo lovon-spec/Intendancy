@@ -7,17 +7,26 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "vitest run",
+    "dev:evidence": "vite -c vite.evidence.config.ts",
+    "build:evidence": "vite build -c vite.evidence.config.ts"
   },
   "dependencies": {
+    "@ipld/car": "^5.4.7",
+    "@ipld/dag-pb": "^4.2.0",
+    "@noble/hashes": "^2.4.0",
     "@tanstack/react-query": "^5.95.2",
+    "ipfs-unixfs": "^13.0.0",
+    "multiformats": "^14.0.5",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "react-markdown": "^10.1.0",
     "react-router-dom": "^7.13.2",
     "remark-gfm": "^4.0.1",
     "viem": "^2.47.6",
-    "wagmi": "^3.6.0"
+    "wagmi": "^3.6.0",
+    "yaml": "^2.9.0"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",
@@ -33,7 +42,8 @@
     "tailwindcss": "^4.2.2",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.57.0",
-    "vite": "^8.0.1"
+    "vite": "^8.0.1",
+    "vitest": "^4.1.11"
   },
   "description": "Web interface for the Intendancy verifiable agent-skill registry."
 }
