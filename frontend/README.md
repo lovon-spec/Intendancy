@@ -26,3 +26,7 @@ place credentials only in `.env`.
 npm run lint
 npm run build
 ```
+
+## Evidence display
+
+The juror-facing page the court loads for disputed requests lives in `evidence-display/` and builds separately with `npm run build:evidence`; see [`evidence-display/README.md`](evidence-display/README.md). `npm test` runs the in-browser tree verifier against the CLI's kubo interop vectors.
