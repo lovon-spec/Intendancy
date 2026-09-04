@@ -135,7 +135,7 @@ impl Profile {
     pub fn deployment_context_id(&self) -> B256 {
         use alloy::primitives::keccak256;
         let mut buf = Vec::new();
-        buf.extend_from_slice(b"intendhub-deployment-context-v1");
+        buf.extend_from_slice(b"intendancy-deployment-context-v1");
         buf.extend_from_slice(&self.chain_id.to_be_bytes());
         buf.extend_from_slice(self.genesis_hash.as_slice());
         buf.extend_from_slice(self.registry.as_slice());
@@ -335,7 +335,7 @@ mod tests {
         // for the fixed base_profile() inputs.
         assert_eq!(
             base_profile().deployment_context_id(),
-            "0x253f2981e5d5c11df649ad0fcf6418bf61cdc0b2d902f9100466eee3dd2350aa"
+            "0xb4bbf9f0eb29e58361c80fbd3d772def3fc6f73d069600ae41e3575844a2dbca"
                 .parse::<alloy::primitives::B256>()
                 .unwrap()
         );

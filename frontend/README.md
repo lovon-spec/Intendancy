@@ -1,7 +1,7 @@
-# Intendhub frontend
+# Intendancy frontend
 
 React/Vite interface for browsing, inspecting, and submitting skill entries to the
-Intendhub Kleros Curate registry.
+Intendancy Kleros Curate registry.
 
 ## Local setup
 

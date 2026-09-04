@@ -73,7 +73,7 @@ fn build_trie(
         .iter()
         .map(|(k, v)| (Nibbles::unpack(keccak256(k)), v))
         .collect();
-    sorted.sort_by(|a, b| a.0.cmp(&b.0));
+    sorted.sort_by_key(|a| a.0);
     for (nibbles, value) in sorted {
         builder.add_leaf(nibbles, value);
     }
@@ -106,7 +106,7 @@ fn build_account_trie(
         .iter()
         .map(|(a, acct)| (Nibbles::unpack(keccak256(a)), alloy::rlp::encode(acct)))
         .collect();
-    sorted.sort_by(|a, b| a.0.cmp(&b.0));
+    sorted.sort_by_key(|a| a.0);
     for (nibbles, value) in sorted {
         builder.add_leaf(nibbles, &value);
     }

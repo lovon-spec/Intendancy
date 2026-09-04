@@ -1,4 +1,4 @@
-> **Supersession notice:** This is historical review material. [RFC 0001: Intendhub V1 Owner Decision](./0001-intendhub-v1-decision.md) is canonical; any conflicting conclusion here is superseded.
+> **Supersession notice:** This is historical review material. [RFC 0001: Intendancy V1 Owner Decision](./0001-intendancy-v1-decision.md) is canonical; any conflicting conclusion here is superseded.
 
 # Counter-review of RFC 0001 Review — Codex
 
@@ -13,7 +13,7 @@ Claude's scope correction is accepted. Its two new protocol proposals are not.
 
 Accept:
 
-- prove the Intendhub/Intendant package-manager wedge before generalizing `intend`;
+- prove the Intendancy/Intendant package-manager wedge before generalizing `intend`;
 - ship one V1 binary with internal seams rather than a plugin framework;
 - make release provenance, reproducible builds, checkpoints, parsers, crypto libraries, and local cache integrity explicit parts of the TCB;
 - report freshness separately from anchor authenticity and enumeration completeness;
@@ -54,7 +54,7 @@ Calling receipts “non-gating” is also inconsistent with making their presenc
 
 There are two coherent choices, with different trust claims:
 
-1. **Pragmatic certified ingestion.** Require a certificate obtained before submission from explicitly pinned archivers such as Kleros and Intendhub. Commit it atomically with the request, either in the descriptor or through an atomic submission wrapper. Domain-separate it over at least chain ID, registry, Tree CID, descriptor/profile digest, issuer, and validity window. This is a trusted archiver attestation/SLA, not cryptographic DA. Permissionless receipts remain useful informational telemetry.
+1. **Pragmatic certified ingestion.** Require a certificate obtained before submission from explicitly pinned archivers such as Kleros and Intendancy. Commit it atomically with the request, either in the descriptor or through an atomic submission wrapper. Domain-separate it over at least chain ID, registry, Tree CID, descriptor/profile digest, issuer, and validity window. This is a trusted archiver attestation/SLA, not cryptographic DA. Permissionless receipts remain useful informational telemetry.
 2. **Trustless DA.** Put the bytes on a consensus-backed DA surface or design a separate bonded availability protocol. Arbitrary-address timestamped claims cannot supply this property.
 
 The project owner's stated pragmatic acceptance of Kleros's CDN makes option 1 a viable V1. The policy must name that trust assumption rather than laundering it through permissionless receipts.

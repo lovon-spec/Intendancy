@@ -1,4 +1,4 @@
-//! `intend` — Intendhub consumer library: verified registry snapshots, exact
+//! `intend` — Intendancy consumer library: verified registry snapshots, exact
 //! skill installation, lockfile auditing (verified-snapshot spec v0.2).
 //! Pre-1.0: header-quorum anchoring only, JSON debug transport, bounded
 //! UnixFS-basic install profile (kubo-vector-proven).

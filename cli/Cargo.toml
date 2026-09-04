@@ -3,7 +3,7 @@ name = "intend"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "Intendhub consumer CLI: verified registry snapshots (update), exact skill installation (install), and lockfile auditing (audit) per the partially frozen verified-snapshot spec v0.2. Pre-1.0: header-quorum anchoring only (strict light-client mode pending integration); JSON debug transport; bounded UnixFS-basic install profile."
+description = "Intendancy consumer CLI: verified registry snapshots (update), exact skill installation (install), and lockfile auditing (audit) per the partially frozen verified-snapshot spec v0.2. Pre-1.0: header-quorum anchoring only (strict light-client mode pending integration); JSON debug transport; bounded UnixFS-basic install profile."
 
 # Deliberately its own workspace (mirrors the gate spikes).
 [workspace]

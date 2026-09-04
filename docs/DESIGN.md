@@ -1,11 +1,11 @@
-# Intendhub V1 design
+# Intendancy V1 design
 
 **Status:** Accepted architecture; proof transport and production parameters remain provisional.
-**Canonical decision:** [`rfcs/0001-intendhub-v1-decision.md`](rfcs/0001-intendhub-v1-decision.md)
+**Canonical decision:** [`rfcs/0001-intendancy-v1-decision.md`](rfcs/0001-intendancy-v1-decision.md)
 
 ## Purpose
 
-Intendhub gives Intendant and other agent runtimes a package catalog whose membership and artifact integrity can be checked without trusting a marketplace backend, CDN, IPFS gateway, indexer, or execution RPC.
+Intendancy gives Intendant and other agent runtimes a package catalog whose membership and artifact integrity can be checked without trusting a marketplace backend, CDN, IPFS gateway, indexer, or execution RPC.
 
 V1 curates one artifact type: directories containing a standards-compliant `SKILL.md`. Plugins, MCP servers, and project conventions are intentionally deferred to separate registries and policies because their review criteria and risk differ.
 
@@ -14,14 +14,14 @@ V1 curates one artifact type: directories containing a standards-compliant `SKIL
 The conceptual layers are:
 
 - **`intend`** — verification and package-management machinery: chain anchoring, state proofs, CID/CAR verification, safe installation, lockfiles, and auditing.
-- **Intendhub** — the first registry profile: skills curated by an unmodified Classic Kleros GeneralizedTCR on Gnosis Chain.
+- **Intendancy** — the first registry profile: skills curated by an unmodified Classic Kleros GeneralizedTCR on Gnosis Chain.
 - **Intendant** — the first consuming runtime.
 
 V1 may ship these as one binary with internal seams. A generic adapter/plugin framework will be extracted only after a second real adapter demonstrates the common abstraction.
 
 ## Registry choice
 
-Intendhub uses the unmodified Classic `GeneralizedTCR` deployed through Kleros's official Gnosis `GTCRFactory`.
+Intendancy uses the unmodified Classic `GeneralizedTCR` deployed through Kleros's official Gnosis `GTCRFactory`.
 
 Classic is useful here because it provides:
 
@@ -56,7 +56,7 @@ The V1 availability rule follows established Curate policy:
 
 > Throughout the registration request's challenge period, the complete skill tree identified by the Tree CID must be stored on IPFS and remain accessible and discoverable.
 
-This is a temporal policy obligation, not a new data-availability protocol. Intendhub does not add ingestion receipts, certified archivers, issuer or guardian rosters, uptime probes, a late-production cure rule, or a juror-time retrieval test. Tooling should upload and pin through reliable infrastructure, including Kleros's service, but no particular gateway is normative.
+This is a temporal policy obligation, not a new data-availability protocol. Intendancy does not add ingestion receipts, certified archivers, issuer or guardian rosters, uptime probes, a late-production cure rule, or a juror-time retrieval test. Tooling should upload and pin through reliable infrastructure, including Kleros's service, but no particular gateway is normative.
 
 Historical continuous availability remains evidentiary rather than cryptographically proven. After registration, unavailability alone is not a removal ground; unfetchable content simply cannot be installed.
 

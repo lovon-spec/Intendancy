@@ -1,6 +1,6 @@
 # intend
 
-Intendhub consumer CLI implementing
+Intendancy consumer CLI implementing
 [`docs/verified-snapshot-spec.md`](../docs/verified-snapshot-spec.md) v0.2 —
 the frozen proof core plus the PROVISIONAL §8/§9 operational contract:
 complete verified registry snapshots (`update`), exact skill installation with

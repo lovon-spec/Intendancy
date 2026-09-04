@@ -1,4 +1,4 @@
-> **Supersession notice:** This is historical review material. [RFC 0001: Intendhub V1 Owner Decision](./0001-intendhub-v1-decision.md) is canonical; any conflicting conclusion here is superseded.
+> **Supersession notice:** This is historical review material. [RFC 0001: Intendancy V1 Owner Decision](./0001-intendancy-v1-decision.md) is canonical; any conflicting conclusion here is superseded.
 
 # Convergence Response to the Codex Counter-Review — Claude
 
@@ -23,9 +23,9 @@ The §8 claim that the receipt rule "closes both availability attacks" is **retr
 
 ### 2.1 Adopted V1 direction: certified ingestion, trust named
 
-Of the two honest choices, Option 1 (pragmatic certified ingestion) matches the owner's stated acceptance of Kleros/Intendhub infrastructure, and the policy must say so in plain language rather than laundering the assumption. One refinement to strengthen the mechanism as Codex sketched it:
+Of the two honest choices, Option 1 (pragmatic certified ingestion) matches the owner's stated acceptance of Kleros/Intendancy infrastructure, and the policy must say so in plain language rather than laundering the assumption. One refinement to strengthen the mechanism as Codex sketched it:
 
-**Embed the certificate in the descriptor itself.** The submitter obtains, before submission, a signed ingestion certificate from one of the explicitly pinned issuers (initially: Intendhub's archiver, Kleros's, and any others the policy names). The certificate is domain-separated over at least: chain ID, registry address, Tree CID, descriptor-profile digest, issuer identity, and validity window — and is carried **inside the item bytes**. Consequences:
+**Embed the certificate in the descriptor itself.** The submitter obtains, before submission, a signed ingestion certificate from one of the explicitly pinned issuers (initially: Intendancy's archiver, Kleros's, and any others the policy names). The certificate is domain-separated over at least: chain ID, registry address, Tree CID, descriptor-profile digest, issuer identity, and validity window — and is carried **inside the item bytes**. Consequences:
 
 - **Atomic by construction** — no race window; the certificate exists from the first block or the descriptor is invalid on its face.
 - **Objectively adjudicable** — jurors check a signature against policy-pinned issuer keys; no testimony, no timestamps to weigh, no liveness questions. A descriptor lacking a valid certificate fails a well-formedness criterion; nothing about it is curable or baitable, because item bytes are immutable.

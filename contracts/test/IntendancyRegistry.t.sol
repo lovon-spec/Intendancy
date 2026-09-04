@@ -7,10 +7,10 @@ import "../src/interfaces/IGeneralizedTCR.sol";
 import "../src/interfaces/IArbitrator.sol";
 import "../src/mock/MockArbitrator.sol";
 
-/// @title Intendhub Registry Integration Tests
+/// @title Intendancy Registry Integration Tests
 /// @dev Tests deploy a GeneralizedTCR via the real GTCRFactory on a Gnosis fork,
 ///      using a MockArbitrator for controllable dispute resolution.
-contract IntendhubRegistryTest is Test {
+contract IntendancyRegistryTest is Test {
     // --- Gnosis Chain addresses ---
     address constant GTCR_FACTORY = 0x794Cee5a6e1501b633eC13b8c1e327d9860FE039;
 

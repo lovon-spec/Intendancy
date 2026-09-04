@@ -107,9 +107,9 @@ pub fn synthetic(i: u64) -> Descriptor {
     Descriptor {
         name: format!("bench-skill-{i:05}"),
         description: format!(
-            "Synthetic benchmark entry {i} for the Intendhub snapshot gate; measures descriptor and proof costs at scale."
+            "Synthetic benchmark entry {i} for the Intendancy snapshot gate; measures descriptor and proof costs at scale."
         ),
-        tree_cid: canonical_cid_v1(format!("intendhub-bench-tree-{i}").as_bytes()),
+        tree_cid: canonical_cid_v1(format!("intendancy-bench-tree-{i}").as_bytes()),
         runtimes: "generic".into(),
         origin: String::new(),
         reserved: String::new(),

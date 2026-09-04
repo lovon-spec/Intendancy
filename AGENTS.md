@@ -1,4 +1,4 @@
-# Intendhub repository guidance
+# Intendancy repository guidance
 
 ## Validation
 
@@ -7,6 +7,7 @@ Run the checks for every component touched by a change:
 - `cd contracts && forge fmt --check && forge test`
 - `cd frontend && npm run lint && npm run build`
 - In each existing Rust crate (`cli`, `spikes/gnosis-anchor`, and `spikes/snapshot-bench`): `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D warnings`, and `cargo test --locked`
+- Run `./scripts/check-brand.sh` after product-facing naming, metadata, or logo changes.
 - When either listing-policy copy changes: `cmp docs/listing-policy.md frontend/public/listing-policy.md`
 
 The full CLI smoke test requires both `cli/` and `spikes/snapshot-bench/`; do not treat its absence from an independent PR branch as a failure. Benchmark regeneration, live probes, and Kubo-vector regeneration are evidence workflows, not routine review gates.

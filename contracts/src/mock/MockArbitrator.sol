@@ -43,14 +43,16 @@ contract MockArbitrator is IArbitrator {
     function createDispute(uint256 _choices, bytes calldata) external payable override returns (uint256 disputeID) {
         require(msg.value >= arbitrationPrice, "Insufficient arbitration fee");
         disputeID = disputes.length;
-        disputes.push(Dispute({
-            arbitrated: IArbitrable(msg.sender),
-            choices: _choices,
-            fee: msg.value,
-            ruling: 0,
-            status: DisputeStatus.Waiting,
-            appealStart: 0
-        }));
+        disputes.push(
+            Dispute({
+                arbitrated: IArbitrable(msg.sender),
+                choices: _choices,
+                fee: msg.value,
+                ruling: 0,
+                status: DisputeStatus.Waiting,
+                appealStart: 0
+            })
+        );
         emit DisputeCreation(disputeID, IArbitrable(msg.sender));
     }
 

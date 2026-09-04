@@ -1,4 +1,4 @@
-# Intendhub Verified Snapshot Specification
+# Intendancy Verified Snapshot Specification
 
 **Version**: 0.2
 **Status**: Partially frozen. The proof-verification core (§2, §5, §6 steps 0–6)
@@ -22,7 +22,7 @@ The key words MUST, MUST NOT, SHOULD, SHOULD NOT, and MAY are to be interpreted 
 
 ## 1. Purpose
 
-This specification defines how untrusted data providers serve the complete contents of the Intendhub Skills Registry, and how consumers verify what they receive through a proof mode or an explicit RPC-quorum fallback.
+This specification defines how untrusted data providers serve the complete contents of the Intendancy Skills Registry, and how consumers verify what they receive through a proof mode or an explicit RPC-quorum fallback.
 
 Design goals:
 
