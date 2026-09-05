@@ -33,6 +33,20 @@ pub const ITEMS_MAPPING_SLOT: u64 = 14;
 /// 0..16 unchanged) plus the verified-source pin of the load-bearing
 /// no-reset property, for the same codehash.
 pub const META_EVIDENCE_UPDATES_SLOT: u64 = 9;
+/// `arbitrator` (slot 0) and `arbitratorExtraData` (slot 1, a Solidity `bytes`):
+/// the court a verdict came from and its parameters. Owner decision
+/// (2026-09-04): both are MANDATORY profile pins and every verification proves
+/// them — a governor may switch the arbitrator or the court, and to a consumer
+/// that is a policy-grade change, accepted only through a new signed profile,
+/// never silently. PROVISIONAL like slot 9, pinned by an asserting fork probe
+/// (`cli/tools/probe-arbitrator-slots.sh`, `docs/spikes/arbitrator-slot-evidence.md`):
+/// a governor `changeArbitrator` moves exactly these words, in both the short
+/// (< 32 bytes, inline) and long (≥ 32 bytes, at `keccak256(1) + i`) forms.
+pub const ARBITRATOR_SLOT: u64 = 0;
+pub const ARBITRATOR_EXTRA_DATA_SLOT: u64 = 1;
+/// Bound on the pinned/proven extra data (Kleros encodes court + jurors in 64
+/// bytes; nothing legitimate approaches this).
+pub const MAX_ARBITRATOR_EXTRA_DATA_BYTES: usize = 4096;
 
 /// Envelope revision this implementation emits and accepts (spec §4).
 pub const SNAPSHOT_VERSION: &str = "0.2";
@@ -81,9 +95,87 @@ pub struct VerifierProfile {
     pub chain_id: u64,
     pub registry: Address,
     pub registry_code_hash: B256,
+    /// The pinned arbitrator and its extra data (spec §3; slots 0 and 1).
+    pub arbitrator: Address,
+    pub arbitrator_extra_data: Bytes,
     pub anchor_block: u64,
     pub anchor_block_hash: B256,
     pub anchor_state_root: B256,
+}
+
+/// Storage slots a Solidity `bytes` of `len` bytes at `ARBITRATOR_EXTRA_DATA_SLOT`
+/// occupies: the main word always; `ceil(len / 32)` data words at
+/// `keccak256(slot) + i` when `len >= 32` (long form). For generation and for
+/// the fresh point check, where the pinned length is known.
+pub fn extra_data_slots_for_len(len: usize) -> Vec<B256> {
+    let main = B256::from(U256::from(ARBITRATOR_EXTRA_DATA_SLOT));
+    let mut slots = vec![main];
+    if len >= 32 {
+        let base = U256::from_be_bytes(keccak256(main).0);
+        for i in 0..len.div_ceil(32) {
+            slots.push(B256::from(base + U256::from(i as u64)));
+        }
+    }
+    slots
+}
+
+/// The byte length a proven `bytes` main word declares, and whether it is the
+/// long form; fails closed on a non-canonical word or an absurd length.
+pub fn bytes_storage_len(main: U256) -> Result<(usize, bool)> {
+    let word = B256::from(main);
+    let low = word[31];
+    if low & 1 == 1 {
+        let len = (main - U256::from(1u64)) / U256::from(2u64);
+        if len > U256::from(MAX_ARBITRATOR_EXTRA_DATA_BYTES as u64) {
+            bail!("arbitratorExtraData declares {len} bytes, above the {MAX_ARBITRATOR_EXTRA_DATA_BYTES} byte bound (fail closed)");
+        }
+        let len = len.to::<usize>();
+        if len < 32 {
+            bail!("arbitratorExtraData main word is a long form of {len} bytes, which Solidity never writes (fail closed)");
+        }
+        Ok((len, true))
+    } else {
+        let len = (low / 2) as usize;
+        if len >= 32 {
+            bail!("arbitratorExtraData main word is a short form of {len} bytes, which Solidity never writes (fail closed)");
+        }
+        Ok((len, false))
+    }
+}
+
+/// Decode a Solidity `bytes` from its proven main word and, for the long form,
+/// its data words in order; the words beyond the declared length must be zero.
+pub fn decode_bytes_storage(main: U256, data_words: &[U256]) -> Result<Vec<u8>> {
+    let (len, long) = bytes_storage_len(main)?;
+    let mut out = Vec::with_capacity(len);
+    if !long {
+        if !data_words.is_empty() {
+            bail!("short-form arbitratorExtraData with data words");
+        }
+        let word = B256::from(main);
+        out.extend_from_slice(&word[..len]);
+        // canonical short form: bytes after the data up to the length byte are zero
+        if word[len..31].iter().any(|b| *b != 0) {
+            bail!("non-canonical short-form arbitratorExtraData word (fail closed)");
+        }
+        return Ok(out);
+    }
+    let words = len.div_ceil(32);
+    if data_words.len() != words {
+        bail!(
+            "arbitratorExtraData needs {words} data words, {} proven",
+            data_words.len()
+        );
+    }
+    for (i, w) in data_words.iter().enumerate() {
+        let bytes = B256::from(*w);
+        let take = (len - i * 32).min(32);
+        out.extend_from_slice(&bytes[..take]);
+        if bytes[take..].iter().any(|b| *b != 0) {
+            bail!("non-canonical arbitratorExtraData data word {i} (fail closed)");
+        }
+    }
+    Ok(out)
 }
 
 pub fn item_list_slot(index: u64) -> B256 {
@@ -384,7 +476,15 @@ pub fn verify(
         );
     }
     // Length slot + policy-counter slot + per-item (list + status) slots.
-    let max_slots = limits.max_items.saturating_mul(2).saturating_add(2);
+    // 2N + 2 (length, policy counter) + the arbitrator slot + the extra-data
+    // words the PINNED length occupies (spec §6 step 3c).
+    let arbitrator_slots =
+        1 + extra_data_slots_for_len(profile.arbitrator_extra_data.len()).len() as u64;
+    let max_slots = limits
+        .max_items
+        .saturating_mul(2)
+        .saturating_add(2)
+        .saturating_add(arbitrator_slots);
     if snapshot.proofs.slots.len() as u64 > max_slots {
         bail!(
             "slot proof count {} exceeds bound {max_slots}",
@@ -482,6 +582,48 @@ pub fn verify(
             "policy immutability violated: metaEvidenceUpdates = {updates} — the \
              registry's policy was changed after deployment (fail closed; V1 pins \
              one immutable policy per registry)"
+        );
+    }
+
+    // Step 3c: arbitrator identity (spec §6; owner decision 2026-09-04). The
+    // court a verdict came from, and its parameters, are consumer-visible
+    // policy: a governor may switch them, and a switch is accepted only through
+    // a new signed profile, never silently. Both are proven at every anchor.
+    let arb_word = check_slot(B256::from(U256::from(ARBITRATOR_SLOT)), None)?;
+    let arb_bytes = B256::from(arb_word);
+    if arb_bytes[..12].iter().any(|b| *b != 0) {
+        bail!("arbitrator slot holds a non-address word {arb_word} (fail closed)");
+    }
+    let arbitrator = Address::from_word(arb_bytes);
+    if arbitrator != profile.arbitrator {
+        bail!(
+            "arbitrator pin violated: the registry's arbitrator is {arbitrator}, the profile pins {} — \
+             a changed arbitrator needs a new signed profile release (fail closed)",
+            profile.arbitrator
+        );
+    }
+    let main = check_slot(B256::from(U256::from(ARBITRATOR_EXTRA_DATA_SLOT)), None)?;
+    let (proven_len, long) = bytes_storage_len(main)?;
+    if proven_len != profile.arbitrator_extra_data.len() {
+        bail!(
+            "arbitrator extra data pin violated: the registry's extra data is {proven_len} bytes, the profile pins {} bytes — \
+             a changed court or juror count needs a new signed profile release (fail closed)",
+            profile.arbitrator_extra_data.len()
+        );
+    }
+    let mut data_words = Vec::new();
+    if long {
+        for slot in extra_data_slots_for_len(proven_len).into_iter().skip(1) {
+            data_words.push(check_slot(slot, None)?);
+        }
+    }
+    let observed = decode_bytes_storage(main, &data_words)?;
+    if observed.as_slice() != profile.arbitrator_extra_data.as_ref() {
+        bail!(
+            "arbitrator extra data pin violated: the registry's extra data is 0x{} , the profile pins 0x{} — \
+             a changed court or juror count needs a new signed profile release (fail closed)",
+            alloy::primitives::hex::encode(&observed),
+            alloy::primitives::hex::encode(&profile.arbitrator_extra_data)
         );
     }
 
