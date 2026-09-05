@@ -13,8 +13,9 @@ use alloy_trie::proof::ProofRetainer;
 use alloy_trie::{HashBuilder, Nibbles, EMPTY_ROOT_HASH};
 use intend::schema::Descriptor;
 use intend::snapshot::{
-    item_list_slot, item_status_slot, AccountFields, Anchor, Binding, Proofs, Row, SlotProof,
-    Snapshot, VerifierProfile, ITEM_LIST_SLOT, META_EVIDENCE_UPDATES_SLOT, SNAPSHOT_VERSION,
+    extra_data_slots_for_len, item_list_slot, item_status_slot, AccountFields, Anchor, Binding,
+    Proofs, Row, SlotProof, Snapshot, VerifierProfile, ARBITRATOR_EXTRA_DATA_SLOT, ARBITRATOR_SLOT,
+    ITEM_LIST_SLOT, META_EVIDENCE_UPDATES_SLOT, SNAPSHOT_VERSION,
 };
 
 pub const CHAIN_ID: u64 = 100;
@@ -134,13 +135,57 @@ pub struct Fixture {
 }
 
 pub fn build_fixture() -> Fixture {
-    build_fixture_with_policy_updates(0)
+    build_fixture_with(0, &court_extra_data(19, 3))
+}
+
+/// The pinned arbitrator of every fixture (xKlerosLiquid on Gnosis).
+pub fn fixture_arbitrator() -> Address {
+    "0x9C1dA9A04925bDfDedf0f6421bC7EEa8305F9002"
+        .parse()
+        .unwrap()
+}
+
+/// Kleros extra data: court id and juror count, two 32-byte words.
+pub fn court_extra_data(court: u64, jurors: u64) -> Vec<u8> {
+    let mut v = vec![0u8; 64];
+    v[24..32].copy_from_slice(&court.to_be_bytes());
+    v[56..64].copy_from_slice(&jurors.to_be_bytes());
+    v
 }
 
 /// `meta_evidence_updates` != 0 models a registry whose policy was changed
 /// after deployment — verification must fail closed on it.
 #[allow(dead_code)]
 pub fn build_fixture_with_policy_updates(meta_evidence_updates: u64) -> Fixture {
+    build_fixture_with(meta_evidence_updates, &court_extra_data(19, 3))
+}
+
+/// Solidity `bytes` storage words for `data` at `ARBITRATOR_EXTRA_DATA_SLOT`:
+/// the main word, then the long-form data words if any.
+pub fn extra_data_storage_words(data: &[u8]) -> Vec<(B256, U256)> {
+    let main_slot = B256::from(U256::from(ARBITRATOR_EXTRA_DATA_SLOT));
+    if data.len() < 32 {
+        let mut w = [0u8; 32];
+        w[..data.len()].copy_from_slice(data);
+        w[31] = (data.len() * 2) as u8;
+        return vec![(main_slot, U256::from_be_bytes(w))];
+    }
+    let mut out = vec![(main_slot, U256::from((data.len() * 2 + 1) as u64))];
+    for (i, slot) in extra_data_slots_for_len(data.len())
+        .into_iter()
+        .skip(1)
+        .enumerate()
+    {
+        let mut w = [0u8; 32];
+        let chunk = &data[i * 32..((i + 1) * 32).min(data.len())];
+        w[..chunk.len()].copy_from_slice(chunk);
+        out.push((slot, U256::from_be_bytes(w)));
+    }
+    out
+}
+
+#[allow(dead_code)]
+pub fn build_fixture_with(meta_evidence_updates: u64, extra_data: &[u8]) -> Fixture {
     // Four items: statuses 1 (Registered), 2 (RegistrationRequested),
     // 3 (ClearingRequested), and 0 (Absent — status slot DELETED, exclusion).
     let statuses: [u8; 4] = [1, 2, 3, 0];
@@ -152,6 +197,18 @@ pub fn build_fixture_with_policy_updates(meta_evidence_updates: u64) -> Fixture 
     let len_slot = B256::from(U256::from(ITEM_LIST_SLOT));
     let meta_slot = B256::from(U256::from(META_EVIDENCE_UPDATES_SLOT));
     storage.insert(len_slot, alloy::rlp::encode(U256::from(4u64)));
+    // Arbitrator identity: slot 0 and the extra-data words (spec §6 step 3c).
+    let arb_slot = B256::from(U256::from(ARBITRATOR_SLOT));
+    storage.insert(
+        arb_slot,
+        alloy::rlp::encode(U256::from_be_bytes(fixture_arbitrator().into_word().0)),
+    );
+    let extra_words = extra_data_storage_words(extra_data);
+    for (slot, word) in &extra_words {
+        if *word != U256::ZERO {
+            storage.insert(*slot, alloy::rlp::encode(*word));
+        }
+    }
     if meta_evidence_updates != 0 {
         storage.insert(
             meta_slot,
@@ -172,7 +229,8 @@ pub fn build_fixture_with_policy_updates(meta_evidence_updates: u64) -> Fixture 
     }
     // Proof targets: every slot the spec requires, INCLUDING absent ones (the
     // removed item's status slot, and — at zero updates — the policy counter).
-    let mut targets: Vec<B256> = vec![len_slot, meta_slot];
+    let mut targets: Vec<B256> = vec![len_slot, meta_slot, arb_slot];
+    targets.extend(extra_words.iter().map(|(slot, _)| *slot));
     for (i, id) in ids.iter().enumerate() {
         targets.push(item_list_slot(i as u64));
         targets.push(item_status_slot(*id));
@@ -262,6 +320,8 @@ pub fn build_fixture_with_policy_updates(meta_evidence_updates: u64) -> Fixture 
         chain_id: CHAIN_ID,
         registry: registry_address(),
         registry_code_hash: registry_code_hash(),
+        arbitrator: fixture_arbitrator(),
+        arbitrator_extra_data: Bytes::from(extra_data.to_vec()),
         anchor_block: anchor.block_number,
         anchor_block_hash: anchor.block_hash,
         anchor_state_root: anchor.state_root,
@@ -296,6 +356,16 @@ pub fn build_fixture_with_policy_updates(meta_evidence_updates: u64) -> Fixture 
                 },
                 SlotProof {
                     slot: meta_slot,
+                    value: U256::ZERO,
+                    path: Vec::new(),
+                },
+                SlotProof {
+                    slot: arb_slot,
+                    value: U256::ZERO,
+                    path: Vec::new(),
+                },
+                SlotProof {
+                    slot: B256::from(U256::from(ARBITRATOR_EXTRA_DATA_SLOT)),
                     value: U256::ZERO,
                     path: Vec::new(),
                 },

@@ -28,7 +28,7 @@ The facts these proposals rest on were checked against Gnosis mainnet on 2026-09
 | Item | Depends on | Owner |
 |---|---|---|
 | Fill `[SPEC_COMMIT_HASH]` and `[GOVERNOR_ADDRESS]`, render the policy to PDF, pin it, the neutral logo and the display bundle, write the three CIDs into both MetaEvidence files | rows 1, 2, 7, 8 | me |
-| CLI pin of the arbitrator and its extra data: storage-slot probe on a fork, spec sections 3 and 5, profile fields, a rogue-governor fixture that must fail closed | nothing | me |
+| CLI pin of the arbitrator and its extra data: storage-slot probe on a fork, spec sections 3, 5, 6 and 8, profile fields, rogue-governor fixtures and a live switch on a fork that fail closed | done (PR: feat/cli-arbitrator-pin); the slot evidence record stays PROVISIONAL until a reviewer reproduces the probe | me |
 | Spec text for the checkpoint policy and the freshness value | row 9 | me |
 | Production environment file for the deploy script with the approved values, and a full dry run in production mode on a Gnosis fork, including extracting the registry address from the factory receipt | rows 3 to 7 | me |
 | Frontend production environment and build; CLI profile template with everything except the post-deployment values | rows 8, 12 | me |

@@ -5,9 +5,15 @@
 
 mod common;
 
-use alloy::primitives::U256;
-use common::{build_fixture, build_fixture_with_policy_updates, eoa_address, keccak_empty};
-use intend::snapshot::{read_snapshot_bounded, verify, Limits, Snapshot, VerifierProfile};
+use alloy::primitives::{B256, U256};
+use common::{
+    build_fixture, build_fixture_with, build_fixture_with_policy_updates, court_extra_data,
+    eoa_address, keccak_empty,
+};
+use intend::snapshot::{
+    extra_data_slots_for_len, read_snapshot_bounded, verify, Limits, Snapshot, VerifierProfile,
+    ARBITRATOR_SLOT,
+};
 
 fn expect_err(snapshot: &Snapshot, profile: &VerifierProfile, needle: &str) {
     let err = verify(snapshot, profile, &Limits::default()).expect_err("must reject");
@@ -20,7 +26,7 @@ fn pristine_fixture_verifies_with_all_statuses_and_exclusion() {
     let f = build_fixture();
     let stats = verify(&f.snapshot, &f.profile, &Limits::default()).expect("fixture verifies");
     assert_eq!(stats.items, 4);
-    assert_eq!(stats.slot_proofs_checked, 10); // length + policy counter + 4 list + 4 status
+    assert_eq!(stats.slot_proofs_checked, 14); // length + policy counter + 4 list + 4 status
     for status in [0u8, 1, 2, 3] {
         assert!(f.snapshot.rows.iter().any(|r| r.status == status));
     }
@@ -91,11 +97,13 @@ fn eoa_snapshot_verifies_under_a_profile_that_legitimately_pins_it() {
     let p = VerifierProfile {
         registry: eoa_address(),
         registry_code_hash: keccak_empty(),
+        arbitrator: alloy::primitives::Address::ZERO,
+        arbitrator_extra_data: alloy::primitives::Bytes::new(),
         ..f.profile.clone()
     };
     let stats = verify(&f.eoa_snapshot, &p, &Limits::default()).expect("honest empty catalog");
     assert_eq!(stats.items, 0);
-    assert_eq!(stats.slot_proofs_checked, 2); // length + policy counter
+    assert_eq!(stats.slot_proofs_checked, 4); // length + policy counter + arbitrator + extra data
 }
 
 #[test]
@@ -249,4 +257,50 @@ fn expect_err_with(snapshot: &Snapshot, profile: &VerifierProfile, limits: &Limi
     let err = verify(snapshot, profile, limits).expect_err("must reject");
     let msg = format!("{err:#}");
     assert!(msg.contains(needle), "expected {needle:?}, got: {msg}");
+}
+
+#[test]
+fn rejects_an_arbitrator_switch_and_a_court_change() {
+    let f = build_fixture();
+    let mut p = f.profile.clone();
+    p.arbitrator = alloy::primitives::Address::repeat_byte(0x11);
+    expect_err(&f.snapshot, &p, "arbitrator pin violated");
+
+    let mut p = f.profile.clone();
+    p.arbitrator_extra_data = court_extra_data(0, 3).into(); // another court, same length
+    expect_err(&f.snapshot, &p, "arbitrator extra data pin violated");
+
+    let mut p = f.profile.clone();
+    p.arbitrator_extra_data = court_extra_data(19, 5).into(); // more jurors
+    expect_err(&f.snapshot, &p, "arbitrator extra data pin violated");
+
+    let mut p = f.profile.clone();
+    p.arbitrator_extra_data = vec![0xaa, 0xbb, 0xcc].into(); // another length
+    expect_err(&f.snapshot, &p, "arbitrator extra data pin violated");
+}
+
+#[test]
+fn rejects_missing_arbitrator_proofs() {
+    let f = build_fixture();
+    let mut s = f.snapshot.clone();
+    s.proofs
+        .slots
+        .retain(|sp| sp.slot != B256::from(U256::from(ARBITRATOR_SLOT)));
+    expect_err(&s, &f.profile, "missing proof for slot");
+
+    let mut s = f.snapshot.clone();
+    let data_slot = extra_data_slots_for_len(64)[1];
+    s.proofs.slots.retain(|sp| sp.slot != data_slot);
+    expect_err(&s, &f.profile, "missing proof for slot");
+}
+
+#[test]
+fn short_form_extra_data_verifies_and_is_pinned() {
+    let f = build_fixture_with(0, &[0xaa, 0xbb, 0xcc]);
+    let stats = verify(&f.snapshot, &f.profile, &Limits::default()).expect("short form");
+    assert_eq!(stats.slot_proofs_checked, 12); // length + counter + arbitrator + main word + 4 + 4
+
+    let mut p = f.profile.clone();
+    p.arbitrator_extra_data = vec![0xaa, 0xbb, 0xcd].into();
+    expect_err(&f.snapshot, &p, "arbitrator extra data pin violated");
 }

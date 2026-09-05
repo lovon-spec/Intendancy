@@ -2,7 +2,7 @@
 //! never comes from a provider. Loaded from TOML supplied by the operator or a
 //! pinned release.
 
-use alloy::primitives::{Address, B256};
+use alloy::primitives::{Address, Bytes, B256};
 use eyre::{bail, Context, Result};
 use serde::Deserialize;
 
@@ -23,6 +23,14 @@ pub struct Profile {
     /// keccak256 of the registry's deployed runtime code — binds the bytecode
     /// and therefore the storage layout at the pinned address (spec §3/§10).
     pub registry_code_hash: B256,
+    /// MANDATORY pin of the registry's arbitrator (storage slot 0) — the court
+    /// every verdict comes from. Proven at every anchor; a governor switching
+    /// it fails closed until a new signed profile is installed (spec §3, §6
+    /// step 3c; owner decision 2026-09-04).
+    pub arbitrator: Address,
+    /// MANDATORY pin of the arbitrator's extra data (slot 1; for Kleros the
+    /// court id and juror count), proven and compared byte for byte.
+    pub arbitrator_extra_data: Bytes,
     /// Header-quorum sources (spec §7): ≥ 2 RPC endpoints, pairwise distinct
     /// after URL normalization, whose finalized headers must agree. Distinct
     /// URLs are necessary, not sufficient — operators SHOULD be distinct trust
@@ -97,6 +105,15 @@ impl Profile {
         ] {
             validate_meta_evidence_ref(field, value)?;
         }
+        if self.arbitrator == Address::ZERO {
+            bail!("arbitrator must be pinned (a registry has exactly one arbitrator)");
+        }
+        if self.arbitrator_extra_data.len() > crate::snapshot::MAX_ARBITRATOR_EXTRA_DATA_BYTES {
+            bail!(
+                "arbitrator_extra_data exceeds {} bytes",
+                crate::snapshot::MAX_ARBITRATOR_EXTRA_DATA_BYTES
+            );
+        }
         if self.registration_meta_evidence == self.clearing_meta_evidence {
             bail!(
                 "registration_meta_evidence and clearing_meta_evidence must differ \
@@ -126,8 +143,8 @@ impl Profile {
     /// (round-6): keccak256 over a length-prefixed encoding of every profile
     /// field that defines WHICH deployment — and which policy/anchor-mode
     /// context — local state was verified under: chain_id, genesis_hash,
-    /// registry, registry_code_hash, both MetaEvidence pins, and the
-    /// test-workaround flag. Two profiles differing in ANY of these (a
+    /// registry, registry_code_hash, the arbitrator and its extra data, both
+    /// MetaEvidence pins, and the test-workaround flag. Two profiles differing in ANY of these (a
     /// same-chain-id fork with another genesis, the same address under other
     /// bytecode, edited policy pins, test mode) produce different ids, so
     /// catalogs, lockfile entries, and enable proofs made under one context
@@ -135,11 +152,16 @@ impl Profile {
     pub fn deployment_context_id(&self) -> B256 {
         use alloy::primitives::keccak256;
         let mut buf = Vec::new();
-        buf.extend_from_slice(b"intendancy-deployment-context-v1");
+        buf.extend_from_slice(b"intendancy-deployment-context-v2");
         buf.extend_from_slice(&self.chain_id.to_be_bytes());
         buf.extend_from_slice(self.genesis_hash.as_slice());
         buf.extend_from_slice(self.registry.as_slice());
         buf.extend_from_slice(self.registry_code_hash.as_slice());
+        // v2: the arbitrator and its extra data are part of the context — state
+        // verified under one court is never consumed under another.
+        buf.extend_from_slice(self.arbitrator.as_slice());
+        buf.extend_from_slice(&(self.arbitrator_extra_data.len() as u64).to_be_bytes());
+        buf.extend_from_slice(&self.arbitrator_extra_data);
         for s in [
             &self.registration_meta_evidence,
             &self.clearing_meta_evidence,
@@ -175,6 +197,8 @@ impl Profile {
             chain_id: self.chain_id,
             registry: self.registry,
             registry_code_hash: self.registry_code_hash,
+            arbitrator: self.arbitrator,
+            arbitrator_extra_data: self.arbitrator_extra_data.clone(),
             anchor_block: anchor.block_number,
             anchor_block_hash: anchor.block_hash,
             anchor_state_root: anchor.state_root,
@@ -277,6 +301,10 @@ mod tests {
             genesis_hash: alloy::primitives::B256::repeat_byte(0x01),
             registry: alloy::primitives::Address::repeat_byte(0x02),
             registry_code_hash: alloy::primitives::B256::repeat_byte(0x03),
+            arbitrator: "0x9C1dA9A04925bDfDedf0f6421bC7EEa8305F9002"
+                .parse()
+                .unwrap(),
+            arbitrator_extra_data: alloy::primitives::Bytes::from(vec![0u8; 64]),
             anchor_rpcs: vec!["http://127.0.0.1:1".into(), "http://127.0.0.1:2".into()],
             anchor_operators: Vec::new(),
             snapshot_urls: Vec::new(),
@@ -305,6 +333,12 @@ mod tests {
         p.registry_code_hash = alloy::primitives::B256::repeat_byte(0x99);
         assert_ne!(p.deployment_context_id(), base_id, "codehash");
         let mut p = base_profile();
+        p.arbitrator = alloy::primitives::Address::repeat_byte(0x99);
+        assert_ne!(p.deployment_context_id(), base_id, "arbitrator");
+        let mut p = base_profile();
+        p.arbitrator_extra_data = alloy::primitives::Bytes::from(vec![1u8; 64]);
+        assert_ne!(p.deployment_context_id(), base_id, "arbitrator extra data");
+        let mut p = base_profile();
         p.registration_meta_evidence.push('x');
         assert_ne!(p.deployment_context_id(), base_id, "registration pin");
         let mut p = base_profile();
@@ -327,15 +361,17 @@ mod tests {
     }
 
     #[test]
-    fn deployment_context_id_matches_the_v1_golden_vector() {
-        // Round-7 regression pin: the v1 hash ENCODING must never drift
-        // silently — persisted ids would stop matching and every catalog and
-        // lockfile entry would fail closed. Golden value computed
-        // independently (standalone binary, same domain tag + field order)
-        // for the fixed base_profile() inputs.
+    fn deployment_context_id_matches_the_v2_golden_vector() {
+        // Regression pin: the hash ENCODING must never drift silently —
+        // persisted ids would stop matching and every catalog and lockfile
+        // entry would fail closed. v2 (2026-09-05) adds the arbitrator and its
+        // extra data after the codehash; the v1 golden value was
+        // 0xb4bbf9f0…a2dbca. Golden value computed independently (Python
+        // preimage + `cast keccak`, same domain tag + field order) for the
+        // fixed base_profile() inputs.
         assert_eq!(
             base_profile().deployment_context_id(),
-            "0xb4bbf9f0eb29e58361c80fbd3d772def3fc6f73d069600ae41e3575844a2dbca"
+            "0x968e89833f89020b9769116a957c7e6e07e78b0ca61112c1922d65aa9da48602"
                 .parse::<alloy::primitives::B256>()
                 .unwrap()
         );

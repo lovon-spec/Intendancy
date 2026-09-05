@@ -144,15 +144,16 @@ fn multicall_cardinality_guard() {
 
 #[test]
 fn slot_cap_boundary_at_exact_max_items() {
-    // 4 items ⇒ 2N+2 = 10 slot proofs. With max_items = 4 EXACTLY, the healthy
-    // fixture must verify (the old 2N+1 cap wrongly rejected it).
+    // 4 items ⇒ 2N+2 = 10 slot proofs, plus the arbitrator slot and the three
+    // extra-data words of a 64-byte pin = 14. With max_items = 4 EXACTLY, the
+    // healthy fixture must verify (the old 2N+1 cap wrongly rejected it).
     let f = build_fixture();
     let limits = Limits {
         max_items: 4,
         ..Limits::default()
     };
     let stats = verify(&f.snapshot, &f.profile, &limits).expect("boundary must pass");
-    assert_eq!(stats.slot_proofs_checked, 10);
+    assert_eq!(stats.slot_proofs_checked, 14);
 }
 
 fn entry_for(dir: &std::path::Path, files: Vec<LockedFile>, dirs: Vec<String>) -> Entry {

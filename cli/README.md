@@ -47,6 +47,9 @@ intend --profile profile.toml enable ./skill         # clear a sticky suspension
   a provider file/URL whose declared anchor is then quorum-authenticated),
   verifies spec §6 steps 0–7 (profile binding incl. proven codehash, complete
   enumeration, POLICY IMMUTABILITY — `metaEvidenceUpdates` proven zero, the
+  ARBITRATOR PIN — slot 0 and the `arbitratorExtraData` words proven equal to the
+  profile's `arbitrator`/`arbitrator_extra_data` at every anchor, so a governor's
+  court switch fails closed until a new signed profile is installed, the
   owner-decided one-immutable-policy-per-registry invariant — statuses in both
   zero-proof forms, descriptor screening), enforces the §4.1 resource limits
   and §8 freshness/rollback rules (versioned high-water file), and persists
@@ -126,6 +129,8 @@ anchor_operators = ["operator-a", "operator-b"]      # optional; must be pairwis
 snapshot_urls = []               # snapshot providers tried in order (bounded fetch + full verify)
 registration_meta_evidence = "/ipfs/…" # MANDATORY: the DEPLOYMENT policy refs; the on-chain
 clearing_meta_evidence = "/ipfs/…"     # half is metaEvidenceUpdates PROVEN ZERO at every anchor
+arbitrator = "0x9C1d…9002"             # MANDATORY: the court; proven at every anchor (slot 0)
+arbitrator_extra_data = "0x…"           # MANDATORY: court id + jurors; proven byte for byte (slot 1)
 provider_rpc = "https://rpc-c…"  # untrusted snapshot/proof source (verified locally)
 gateways = ["https://ipfs-gateway…"] # untrusted CAR sources (every block hash-checked)
 ```
