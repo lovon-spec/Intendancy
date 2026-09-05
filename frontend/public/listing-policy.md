@@ -1,7 +1,8 @@
-# Intendancy Skills Registry — Listing Policy
+# Agent Skills Registry — Listing Policy
 
 **Version**: 2.1 (draft; pre-launch amendment 2026-08-24: symlinks prohibited in trees, executable bits non-semantic — owner decision)
-**Registry**: Intendancy Skills Registry (Classic GeneralizedTCR)
+**Registry**: Agent Skills Registry (Classic GeneralizedTCR)
+**Governor**: `[GOVERNOR_ADDRESS]`
 **Chain**: Gnosis Chain (chain ID 100)
 **Registry address**: `[TO BE SET AT DEPLOYMENT]`
 
@@ -116,6 +117,10 @@ Post-listing unavailability, by itself, is **not** a removal ground: criterion 1
 ## Consumer Handling of Pending Removal
 
 Consumers MUST treat every `ClearingRequested` item uniformly, regardless of who requested removal. New installation and automatic loading or execution SHOULD be suspended by default while the request is pending. A consumer MAY permit an explicit local override and SHOULD retain existing bytes and lockfile history for inspection. No requester address has special protocol or trust semantics.
+
+## Governance
+
+The registry is neutral infrastructure and carries no product branding. Its governor is the Safe at `[GOVERNOR_ADDRESS]`. The governor may change deposits, the challenge period, the appeal stake multipliers, the arbitrator and its extra data, and the governor itself, and announces every such change ahead of time. The governor never changes this policy or the registry's MetaEvidence: verifiers treat any MetaEvidence update as a policy change and refuse the registry, so a new policy means a new registry. The governor does not adjudicate; challenged entries are decided by Kleros jurors under this policy. The intended direction is to widen governance to the registry's community as adoption grows.
 
 ## Evidence Guidelines
 
