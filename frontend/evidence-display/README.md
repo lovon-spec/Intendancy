@@ -1,6 +1,6 @@
 # Evidence display
 
-The page Kleros jurors see inside the court when an Intendancy request is disputed. The court loads it in a frame as `index.html?{"disputeID":…,"arbitrableContractAddress":…,"arbitratorContractAddress":…,"arbitrableChainID":…,"arbitrableJsonRpcUrl":…}` (URL-encoded), which is the convention the registration and clearing MetaEvidence declare under `evidenceDisplayInterfaceRequiredParams`.
+The page Kleros jurors see inside the court when a request in the Agent Skills Registry is disputed. The court loads it in a frame as `index.html?{"disputeID":…,"arbitrableContractAddress":…,"arbitratorContractAddress":…,"arbitrableChainID":…,"arbitrableJsonRpcUrl":…}` (URL-encoded), which is the convention the registration and clearing MetaEvidence declare under `evidenceDisplayInterfaceRequiredParams`.
 
 What it does, in the browser, with no backend:
 

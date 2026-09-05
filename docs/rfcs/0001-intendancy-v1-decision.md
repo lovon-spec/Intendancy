@@ -126,7 +126,11 @@ Two bounded validations precede a wire-format or implementation freeze:
 
 This decision does not freeze the registry address, runtime code hash, arbitrator proxy/implementation pins, storage slots, encoder vectors, Agent Skills specification commit, snapshot framing, checkpoint sources, maximum anchor age, size/resource limits, deposits, court parameters, governor/governance arrangement, or other production constants. Those require measured validation and explicit pre-deployment sign-off. No production deployment or funds are authorized by this architecture decision.
 
-## 8. Historical record
+## 8. Amendment: the registry is unbranded (owner decision, 2026-09-04)
+
+The registry is deployed as neutral infrastructure named **Agent Skills Registry**. Its MetaEvidence, listing policy, logo and juror evidence display carry no product branding; Intendancy names the consumer product (the `intend` distribution, the website, the profile). The policy discloses the governor and its limits, and describes the wider-governance path as the registry's community without naming an organization. Nothing in the contracts or the deployment changes; names live in MetaEvidence and documents, which are immutable per registry, which is why this was decided before anything was pinned.
+
+## 9. Historical record
 
 The following documents are retained as the review trail:
 
