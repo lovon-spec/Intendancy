@@ -1,6 +1,6 @@
 # Agent Skills Registry — Listing Policy
 
-**Version**: 2.1 (draft; pre-launch amendment 2026-08-24: symlinks prohibited in trees, executable bits non-semantic — owner decision)
+**Version**: 2.2 (draft; pre-launch amendments by owner decision — 2026-08-24: symlinks prohibited in trees, executable bits non-semantic; 2026-09-05: CIDv1 required for every linked CID, Agent Skills specification pinned)
 **Registry**: Agent Skills Registry (Classic GeneralizedTCR)
 **Governor**: `[GOVERNOR_ADDRESS]`
 **Chain**: Gnosis Chain (chain ID 100)
@@ -18,7 +18,7 @@ This registry lists **skills only**: directories containing a `SKILL.md` per the
 
 ## Definitions
 
-- **Skill tree** — the complete skill directory (SKILL.md plus any `scripts/`, `references/`, `assets/`, or other files), addressed by a single IPFS UnixFS directory CID (the **Tree CID**). The Tree CID immutably identifies every byte of the skill. The root CID and every linked CID in the DAG must use a 32-byte SHA-256 multihash; linked blocks may use only the DAG-PB or raw codec.
+- **Skill tree** — the complete skill directory (SKILL.md plus any `scripts/`, `references/`, `assets/`, or other files), addressed by a single IPFS UnixFS directory CID (the **Tree CID**). The Tree CID immutably identifies every byte of the skill. The root CID and every linked CID in the DAG must be CIDv1 with a 32-byte SHA-256 multihash; linked blocks may use only the DAG-PB or raw codec. This is exactly what `ipfs add -r --cid-version 1` produces; a tree that links a CIDv0 anywhere is not a valid skill tree (criterion 2).
 - **Virtual root name** — a Tree CID does not encode a name for its outer directory. Wherever a skill specification or runtime needs that name, this policy defines it to be the descriptor's Name value.
 - **Descriptor** — the on-chain item: the RLP encoding of the column values below, stored in registry contract storage. The item ID is `keccak256(descriptor)`.
 - **Submission period** — for this policy, the interval from submission of a registration request until that request is challenged or its challenge deadline passes.
@@ -44,11 +44,11 @@ An entry MUST satisfy ALL of the following criteria. An entry that fails ANY cri
 All six columns are present and conform to the formats above, including the canonical-CID rule for the Tree CID and the requirement that Reserved is empty.
 
 ### 2. Valid Skill
-The skill tree's root contains a `SKILL.md` that is a valid skill per the **Agent Skills specification as published at commit `[SPEC_COMMIT_HASH]` of `github.com/agentskills/agentskills`**: YAML frontmatter with required `name` (1–64 chars, lowercase alphanumeric and hyphens, no leading/trailing/consecutive hyphens) and `description` (1–1024 chars); only spec-defined top-level frontmatter fields are permitted, and runtime-specific extension data must use the specification's `metadata` map. Output of validation tools (e.g., `skills-ref`) is admissible **evidence** of compliance or non-compliance, but the specification text at the pinned commit is the standard — not any tool.
+The skill tree's root contains a `SKILL.md` that is a valid skill per the **Agent Skills specification as published at commit `69ef37e9424c0a7ea9dd2293b559e43ec8176379` (2026-08-09) of `github.com/agentskills/agentskills`**: YAML frontmatter with required `name` (1–64 chars, lowercase alphanumeric and hyphens, no leading/trailing/consecutive hyphens) and `description` (1–1024 chars); only spec-defined top-level frontmatter fields are permitted, and runtime-specific extension data must use the specification's `metadata` map. Output of validation tools (e.g., `skills-ref`) is admissible **evidence** of compliance or non-compliance, but the specification text at the pinned commit is the standard — not any tool.
 
 The entry must be a skill (an invocable capability). Project-instruction files, plugin bundles, or other artifact types miscategorized as skills fail this criterion.
 
-The tree consists of directories and regular files ONLY: it MUST NOT contain symlinks (of any target), and executable permission bits are **not semantic** in this policy version — conforming installers neither preserve nor interpret them, and skills invoke their scripts through explicit interpreters (e.g., `bash scripts/x.sh`, `python3 scripts/y.py`). A tree whose behavior depends on a file's executable bit fails this criterion.
+The tree consists of directories and regular files ONLY: it MUST NOT contain symlinks (of any target), and executable permission bits are **not semantic** in this policy version — conforming installers neither preserve nor interpret them, and skills invoke their scripts through explicit interpreters (e.g., `bash scripts/x.sh`, `python3 scripts/y.py`). A tree whose behavior depends on a file's executable bit fails this criterion. Every CID linked inside the tree is CIDv1 with a 32-byte SHA-256 multihash and the DAG-PB or raw codec, as `ipfs add -r --cid-version 1` produces; a tree containing a CIDv0 link fails this criterion.
 
 ### 3. Frontmatter Binding
 The Name and Description columns are byte-identical to the SKILL.md frontmatter `name` and `description`. (This guarantees the on-chain strings a consumer indexes are exactly the strings an agent runtime will load from the verified artifact.)

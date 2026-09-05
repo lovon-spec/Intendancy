@@ -408,10 +408,10 @@ Still open before the spec can claim 1.0:
    Remaining before §9 freezes: the named race-hardening blockers in §9 (audit
    traversal, bind resolution, final-child-name replacement),
    broader-than-one-producer compatibility evidence, the maintained-stack
-   alternative evaluation, and the **CIDv0-children owner decision** (§9: the
-   implementation requires CIDv1 for every linked CID; the recommendation to
-   the owner is to make that the policy rule, matching kubo `--cid-version 1`
-   output). (The former owner-decision dependencies — policy binding and tree
+   alternative evaluation, and ~~the CIDv0-children owner decision~~ **DECIDED (owner, 2026-09-05):
+   listing policy v2.2 requires CIDv1 for every linked CID**, matching kubo
+   `--cid-version 1` output, so the installer's rejection of any other CID
+   form is the POLICY, not a gap. (The former owner-decision dependencies — policy binding and tree
    node types — are DECIDED, items 6/7.)
 3. **Gnosis light-client productization.** Gate 1 proved feasibility with no
    fork (helios-consensus-core's public `ConsensusSpec` trait; Gnosis injected as
