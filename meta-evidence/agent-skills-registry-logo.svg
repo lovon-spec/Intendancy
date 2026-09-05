@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title desc">
+  <title id="title">Agent Skills Registry</title>
+  <desc id="desc">Three list rows on a slate tile, the last ending in a verified-status dot.</desc>
+  <rect x="2" y="2" width="60" height="60" rx="12" fill="#2b3138"/>
+  <rect x="14" y="17" width="36" height="6" rx="3" fill="#e6e4de"/>
+  <rect x="14" y="29" width="28" height="6" rx="3" fill="#e6e4de"/>
+  <rect x="14" y="41" width="20" height="6" rx="3" fill="#e6e4de"/>
+  <circle cx="45" cy="44" r="5" fill="#5fb3bb"/>
+</svg>

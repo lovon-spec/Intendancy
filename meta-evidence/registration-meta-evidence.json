@@ -1,7 +1,7 @@
 {
-  "title": "Add a skill to Intendancy Registry",
-  "description": "Someone requested to add an agent skill to the Intendancy Registry.",
-  "question": "Does this skill comply with the Intendancy listing policy?",
+  "title": "Add a skill to the Agent Skills Registry",
+  "description": "Someone requested to add an agent skill to the Agent Skills Registry, a Kleros-curated list of AI agent skills.",
+  "question": "Does this skill comply with the registry's listing policy?",
   "rulingOptions": {
     "titles": [
       "Yes, Add It",
@@ -16,9 +16,9 @@
   "fileURI": "/ipfs/TODO_LISTING_POLICY_CID/listing-policy.pdf",
   "evidenceDisplayInterfaceURI": "/ipfs/TODO_EVIDENCE_DISPLAY_CID/index.html",
   "metadata": {
-    "tcrTitle": "Intendancy Skills Registry",
-    "tcrDescription": "An optimistic Kleros-curated registry of AI agent skills.",
-    "logoURI": "/ipfs/TODO_LOGO_CID/intendancy-logo.svg",
+    "tcrTitle": "Agent Skills Registry",
+    "tcrDescription": "An optimistic Kleros-curated registry of AI agent skills in the Agent Skills format.",
+    "logoURI": "/ipfs/TODO_LOGO_CID/agent-skills-registry-logo.svg",
     "columns": [
       {
         "label": "Name",

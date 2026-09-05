@@ -263,7 +263,7 @@ export function App() {
   if (itemError) {
     return (
       <main className="mx-auto max-w-3xl p-6 text-sm text-gray-800">
-        <h1 className="text-lg font-semibold">Intendancy skill review</h1>
+        <h1 className="text-lg font-semibold">Skill review</h1>
         <p className="mt-3 rounded bg-red-50 p-3 text-red-900">{itemError}</p>
       </main>
     );

@@ -6,7 +6,8 @@ This document is the canonical naming reference for this repository.
 
 | Name | Use | Do not use as a substitute |
 |---|---|---|
-| **Intendancy** | The product and concrete governed skill-registry profile. | Intendhub, marketplace, app store. |
+| **Intendancy** | The consumer product: the `intend` distribution, the website and the registry profile. Never the on-chain registry itself. | Intendhub, marketplace, app store, the name of the list. |
+| **Agent Skills Registry** | The on-chain Kleros Curate list, deployed as unbranded neutral infrastructure. | Intendancy Registry, Intendancy Skills Registry. |
 | **`intend`** | The generic verifier, package-management machinery, CLI command, and binary. | Intendancy CLI, unless discussing the product distribution as a whole. |
 | **Intendant** | The first consuming agent runtime. | Intendancy. |
 | **Intendment** | The separate optimistic-dispute settlement project. | A component of Intendancy or Intendant. |
@@ -17,7 +18,7 @@ Capitalize **Intendancy**, **Intendant**, and **Intendment** when naming product
 
 Preferred one-line description:
 
-> **Intendancy is a verifiable, policy-governed registry for agent skills.**
+> **Intendancy is the verifiable, policy-governed way to use the Agent Skills Registry.**
 
 Expanded description:
 
@@ -28,6 +29,10 @@ Relationship statement:
 > **`intend` verifies and installs. Intendancy governs the catalog. Intendant consumes it.**
 
 The product is a **registry**, **catalog**, **governed capability domain**, or **registry profile** depending on context. It may provide a web interface, but it is not named or positioned as a “hub.” Avoid calling it a marketplace: submissions and challenges can be transacted through the frontend, but the core product claim is independently verifiable curation and exact artifact installation, not trusted commercial intermediation.
+
+## The registry is unbranded
+
+Owner decision, 2026-09-04. The on-chain registry is deployed as the **Agent Skills Registry**: its MetaEvidence titles, list title, logo, listing policy and juror evidence display carry no Intendancy branding, so that it reads as shared infrastructure in Kleros's list of lists and any runtime or submitter can build on it. Intendancy brands only the consumer side. When describing where governance is headed, say "the registry's community"; do not name any single organization as its future steward.
 
 ## Naming rationale
 
