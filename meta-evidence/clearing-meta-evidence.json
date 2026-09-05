@@ -3,7 +3,10 @@
   "description": "Someone requested to remove an agent skill from the Intendancy Registry.",
   "question": "Does this skill meet one or more removal criteria in the Intendancy listing policy?",
   "rulingOptions": {
-    "titles": ["Yes, Remove It", "No, Don't Remove It"],
+    "titles": [
+      "Yes, Remove It",
+      "No, Don't Remove It"
+    ],
     "descriptions": [
       "Select this only if the skill meets one or more removal criteria in the listing policy.",
       "Select this if no removal criterion is established and the skill should remain registered."
@@ -11,7 +14,7 @@
   },
   "category": "Curated Lists",
   "fileURI": "/ipfs/TODO_LISTING_POLICY_CID/listing-policy.pdf",
-  "dynamicScriptURI": "",
+  "evidenceDisplayInterfaceURI": "/ipfs/TODO_EVIDENCE_DISPLAY_CID/index.html",
   "metadata": {
     "tcrTitle": "Intendancy Skills Registry",
     "tcrDescription": "An optimistic Kleros-curated registry of AI agent skills.",
@@ -59,5 +62,13 @@
     "requireRemovalEvidence": true,
     "isTCRofTCRs": false,
     "relTcrDisabled": true
-  }
+  },
+  "_v": "1.0.0",
+  "evidenceDisplayInterfaceRequiredParams": [
+    "disputeID",
+    "arbitrableContractAddress",
+    "arbitratorContractAddress",
+    "arbitrableChainID",
+    "arbitrableJsonRpcUrl"
+  ]
 }
