@@ -9,8 +9,8 @@ The facts these proposals rest on were checked against Gnosis mainnet on 2026-09
 | # | Input | Proposal | Why | Status |
 |---|---|---|---|---|
 | 0 | Registry name | The on-chain list is the unbranded **Agent Skills Registry**; Intendancy brands only the CLI distribution, the site and the profile (PR #9). | Neutral infrastructure in Kleros's list of lists is what other runtimes and submitters build on; the name is immutable per registry. | decided 2026-09-04 |
-| 1 | Listing policy, last open rule: CIDv0 children | Require CIDv1 for every linked CID in a tree. | It is what `ipfs add --cid-version 1` produces, what the installer already enforces, and what the evidence display flags. A v0 link in a v1 tree only ever comes from a mixed toolchain. | decision |
-| 2 | Agent Skills revision pin | Pin the head commit of `github.com/agentskills/agentskills` on the day the policy is approved; write it into `[SPEC_COMMIT_HASH]` in both policy copies. | Policy is immutable per registry, so the pin is forever; the newest published revision at approval time is the least surprising choice. | decision, then one edit |
+| 1 | Listing policy, last open rule: CIDv0 children | Require CIDv1 for every linked CID in a tree. | It is what `ipfs add --cid-version 1` produces, what the installer already enforces, and what the evidence display flags. A v0 link in a v1 tree only ever comes from a mixed toolchain. | adopted 2026-09-05 (policy 2.2) |
+| 2 | Agent Skills revision pin | Pin the head commit of `github.com/agentskills/agentskills` on the day the policy is approved; write it into `[SPEC_COMMIT_HASH]` in both policy copies. | Policy is immutable per registry, so the pin is forever; the newest published revision at approval time is the least surprising choice. | adopted 2026-09-05: `69ef37e9`, the head since 2026-08-09; if the head moves before the policy is pinned on deployment day, re-pin deliberately |
 | 3 | Deposits | Submission base deposit 30 xDAI; removal base deposit 30 xDAI; submission and removal challenge base deposits 0. | The Scout precedent. A zero challenger deposit means a challenger risks only the arbitration fee, so there is no bait profit in provoking challenges, and honest challengers of a tiny new list are not asked to post capital. | decision |
 | 4 | Challenge period | 3.5 days, 302400 seconds. | The Scout precedent; long enough for a human watchdog, short enough that listing is not a week-long wait. | decision |
 | 5 | Court and jurors | Court 19, three jurors; arbitration cost 21.6 xDAI today. | The Curation court the Scout lists use; three jurors is the smallest panel Kleros runs there. A listing therefore locks 51.6 xDAI until it executes; a challenge costs 21.6. | decision |
@@ -27,7 +27,7 @@ The facts these proposals rest on were checked against Gnosis mainnet on 2026-09
 
 | Item | Depends on | Owner |
 |---|---|---|
-| Fill `[SPEC_COMMIT_HASH]` and `[GOVERNOR_ADDRESS]`, render the policy to PDF, pin it, the neutral logo and the display bundle, write the three CIDs into both MetaEvidence files | rows 1, 2, 7, 8 | me |
+| Fill `[GOVERNOR_ADDRESS]` (`[SPEC_COMMIT_HASH]` filled 2026-09-05), render the policy to PDF, pin it, the neutral logo and the display bundle, write the three CIDs into both MetaEvidence files | rows 7, 8 | me |
 | CLI pin of the arbitrator and its extra data: storage-slot probe on a fork, spec sections 3, 5, 6 and 8, profile fields, rogue-governor fixtures and a live switch on a fork that fail closed | done (PR: feat/cli-arbitrator-pin); the slot evidence record stays PROVISIONAL until a reviewer reproduces the probe | me |
 | Spec text for the checkpoint policy and the freshness value | row 9 | me |
 | Production environment file for the deploy script with the approved values, and a full dry run in production mode on a Gnosis fork, including extracting the registry address from the factory receipt | rows 3 to 7 | me |
