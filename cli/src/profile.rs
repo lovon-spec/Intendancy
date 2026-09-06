@@ -9,6 +9,18 @@ use serde::Deserialize;
 use crate::anchor::QuorumAnchor;
 use crate::snapshot::{VerifierProfile, SNAPSHOT_VERSION};
 
+/// A policy version the profile author ACCEPTS beyond the deployment one
+/// (spec §3 `policyVersions`; owner decision 2026-09-06). `updates` is the
+/// registry's `metaEvidenceUpdates` counter value that announced it, and the
+/// two references are the MetaEvidence documents that announcement declared.
+#[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PolicyUpdate {
+    pub updates: u64,
+    pub registration_meta_evidence: String,
+    pub clearing_meta_evidence: String,
+}
+
 #[derive(Deserialize, Debug, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct Profile {
@@ -31,6 +43,16 @@ pub struct Profile {
     /// MANDATORY pin of the arbitrator's extra data (slot 1; for Kleros the
     /// court id and juror count), proven and compared byte for byte.
     pub arbitrator_extra_data: Bytes,
+    /// MANDATORY pin of the registry's governor (storage slot 3): the timelock
+    /// in front of the Safe (RFC 0001 §9), i.e. who may queue every other
+    /// change. Proven at every anchor; a changed governor fails closed until a
+    /// new signed profile is installed (spec §3, §6 step 3d).
+    pub governor: Address,
+    /// Policy versions accepted beyond the deployment one (spec §3). The
+    /// accepted `metaEvidenceUpdates` values are 0 plus these; a proven counter
+    /// outside the set fails closed (spec §6 step 3b). Strictly increasing.
+    #[serde(default)]
+    pub policy_updates: Vec<PolicyUpdate>,
     /// Header-quorum sources (spec §7): ≥ 2 RPC endpoints, pairwise distinct
     /// after URL normalization, whose finalized headers must agree. Distinct
     /// URLs are necessary, not sufficient — operators SHOULD be distinct trust
@@ -45,13 +67,13 @@ pub struct Profile {
     /// failures).
     #[serde(default)]
     pub snapshot_urls: Vec<String>,
-    /// MANDATORY pins of the DEPLOYMENT MetaEvidence/policy references (spec §3).
-    /// Trust model: this profile is a locally authenticated deployment manifest —
-    /// it pins the registry, its codehash, and the two INITIAL MetaEvidence
-    /// references the deployment events declared; the on-chain
-    /// `metaEvidenceUpdates == 0` proof (spec §6 step 3b) then establishes that
-    /// no later policy was ever declared, so these pinned references ARE the
-    /// policy every verdict was judged under.
+    /// MANDATORY pins of the DEPLOYMENT MetaEvidence/policy references (spec §3):
+    /// policy version 0. Trust model: this profile is a locally authenticated
+    /// deployment manifest — it pins the registry, its codehash, and the two
+    /// INITIAL MetaEvidence references the deployment events declared; the
+    /// on-chain `metaEvidenceUpdates` proof (spec §6 step 3b) then establishes
+    /// WHICH accepted version the registry is at, so the references for that
+    /// version are the policy every later verdict was judged under.
     pub registration_meta_evidence: String,
     pub clearing_meta_evidence: String,
     /// Optional RPC used as the untrusted snapshot/proof PROVIDER (self-generation
@@ -108,6 +130,31 @@ impl Profile {
         if self.arbitrator == Address::ZERO {
             bail!("arbitrator must be pinned (a registry has exactly one arbitrator)");
         }
+        if self.governor == Address::ZERO {
+            bail!("governor must be pinned (the timelock in front of the Safe; spec §3)");
+        }
+        let mut last_updates = 0u64;
+        for (i, u) in self.policy_updates.iter().enumerate() {
+            if u.updates <= last_updates {
+                bail!(
+                    "policy_updates[{i}].updates = {} must be strictly increasing and at least 1 \
+                     (0 is the deployment version pinned by the two mandatory references)",
+                    u.updates
+                );
+            }
+            last_updates = u.updates;
+            validate_meta_evidence_ref(
+                &format!("policy_updates[{i}].registration_meta_evidence"),
+                &u.registration_meta_evidence,
+            )?;
+            validate_meta_evidence_ref(
+                &format!("policy_updates[{i}].clearing_meta_evidence"),
+                &u.clearing_meta_evidence,
+            )?;
+            if u.registration_meta_evidence == u.clearing_meta_evidence {
+                bail!("policy_updates[{i}]: the two MetaEvidence references must differ");
+            }
+        }
         if self.arbitrator_extra_data.len() > crate::snapshot::MAX_ARBITRATOR_EXTRA_DATA_BYTES {
             bail!(
                 "arbitrator_extra_data exceeds {} bytes",
@@ -144,7 +191,8 @@ impl Profile {
     /// field that defines WHICH deployment — and which policy/anchor-mode
     /// context — local state was verified under: chain_id, genesis_hash,
     /// registry, registry_code_hash, the arbitrator and its extra data, both
-    /// MetaEvidence pins, and the test-workaround flag. Two profiles differing in ANY of these (a
+    /// deployment MetaEvidence pins, the governor, every accepted policy
+    /// version, and the test-workaround flag. Two profiles differing in ANY of these (a
     /// same-chain-id fork with another genesis, the same address under other
     /// bytecode, edited policy pins, test mode) produce different ids, so
     /// catalogs, lockfile entries, and enable proofs made under one context
@@ -152,7 +200,7 @@ impl Profile {
     pub fn deployment_context_id(&self) -> B256 {
         use alloy::primitives::keccak256;
         let mut buf = Vec::new();
-        buf.extend_from_slice(b"intendancy-deployment-context-v2");
+        buf.extend_from_slice(b"intendancy-deployment-context-v3");
         buf.extend_from_slice(&self.chain_id.to_be_bytes());
         buf.extend_from_slice(self.genesis_hash.as_slice());
         buf.extend_from_slice(self.registry.as_slice());
@@ -168,6 +216,18 @@ impl Profile {
         ] {
             buf.extend_from_slice(&(s.len() as u64).to_be_bytes());
             buf.extend_from_slice(s.as_bytes());
+        }
+        // v3 (2026-09-06): the governor and every accepted policy version are
+        // part of the context — state verified under one policy set is never
+        // consumed under another.
+        buf.extend_from_slice(self.governor.as_slice());
+        buf.extend_from_slice(&(self.policy_updates.len() as u64).to_be_bytes());
+        for u in &self.policy_updates {
+            buf.extend_from_slice(&u.updates.to_be_bytes());
+            for s in [&u.registration_meta_evidence, &u.clearing_meta_evidence] {
+                buf.extend_from_slice(&(s.len() as u64).to_be_bytes());
+                buf.extend_from_slice(s.as_bytes());
+            }
         }
         buf.push(self.test_headerless_state_root as u8);
         keccak256(&buf)
@@ -199,6 +259,8 @@ impl Profile {
             registry_code_hash: self.registry_code_hash,
             arbitrator: self.arbitrator,
             arbitrator_extra_data: self.arbitrator_extra_data.clone(),
+            governor: self.governor,
+            accepted_policy_updates: self.policy_updates.iter().map(|u| u.updates).collect(),
             anchor_block: anchor.block_number,
             anchor_block_hash: anchor.block_hash,
             anchor_state_root: anchor.state_root,
@@ -292,7 +354,7 @@ pub fn normalized_origin(raw: &str) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalized_origin, validate_meta_evidence_ref, Profile};
+    use super::{normalized_origin, validate_meta_evidence_ref, PolicyUpdate, Profile};
 
     fn base_profile() -> Profile {
         let cid = "bafybeidgtfsc2ro3pfmyggmbz4ea7xg7g4gpehqur7klaadtreyjz6s3fu";
@@ -305,6 +367,8 @@ mod tests {
                 .parse()
                 .unwrap(),
             arbitrator_extra_data: alloy::primitives::Bytes::from(vec![0u8; 64]),
+            governor: alloy::primitives::Address::repeat_byte(0x04),
+            policy_updates: Vec::new(),
             anchor_rpcs: vec!["http://127.0.0.1:1".into(), "http://127.0.0.1:2".into()],
             anchor_operators: Vec::new(),
             snapshot_urls: Vec::new(),
@@ -345,6 +409,20 @@ mod tests {
         p.clearing_meta_evidence.push('x');
         assert_ne!(p.deployment_context_id(), base_id, "clearing pin");
         let mut p = base_profile();
+        p.governor = alloy::primitives::Address::repeat_byte(0x99);
+        assert_ne!(p.deployment_context_id(), base_id, "governor");
+        let mut p = base_profile();
+        p.policy_updates.push(PolicyUpdate {
+            updates: 1,
+            registration_meta_evidence: p.registration_meta_evidence.clone(),
+            clearing_meta_evidence: p.clearing_meta_evidence.clone(),
+        });
+        assert_ne!(
+            p.deployment_context_id(),
+            base_id,
+            "accepted policy version"
+        );
+        let mut p = base_profile();
         p.test_headerless_state_root = true;
         assert_ne!(p.deployment_context_id(), base_id, "test mode");
         let mut p = base_profile();
@@ -361,17 +439,17 @@ mod tests {
     }
 
     #[test]
-    fn deployment_context_id_matches_the_v2_golden_vector() {
+    fn deployment_context_id_matches_the_v3_golden_vector() {
         // Regression pin: the hash ENCODING must never drift silently —
         // persisted ids would stop matching and every catalog and lockfile
-        // entry would fail closed. v2 (2026-09-05) adds the arbitrator and its
-        // extra data after the codehash; the v1 golden value was
-        // 0xb4bbf9f0…a2dbca. Golden value computed independently (Python
-        // preimage + `cast keccak`, same domain tag + field order) for the
-        // fixed base_profile() inputs.
+        // entry would fail closed. v3 (2026-09-06) adds the governor and the
+        // accepted policy versions after the MetaEvidence pins; the v2 golden
+        // value was 0x968e8983…a48602 and v1's 0xb4bbf9f0…a2dbca. Golden value
+        // computed independently (Python preimage + `cast keccak`, same domain
+        // tag + field order) for the fixed base_profile() inputs.
         assert_eq!(
             base_profile().deployment_context_id(),
-            "0x968e89833f89020b9769116a957c7e6e07e78b0ca61112c1922d65aa9da48602"
+            "0xa3dc4dea4df4b2b7ce1dfb5f5005d116a8697fe4e912ff8f9f28596b3dc5c1ca"
                 .parse::<alloy::primitives::B256>()
                 .unwrap()
         );

@@ -46,15 +46,16 @@ intend --profile profile.toml enable ./skill         # clear a sticky suspension
   (self-generated via the untrusted provider RPC using Multicall3 batching, or
   a provider file/URL whose declared anchor is then quorum-authenticated),
   verifies spec §6 steps 0–7 (profile binding incl. proven codehash, complete
-  enumeration, POLICY IMMUTABILITY — `metaEvidenceUpdates` proven zero, the
+  enumeration, the POLICY VERSION — `metaEvidenceUpdates` proven to be a version
+  the profile accepts (0, or one it lists with its announced references), the
   ARBITRATOR PIN — slot 0 and the `arbitratorExtraData` words proven equal to the
-  profile's `arbitrator`/`arbitrator_extra_data` at every anchor, so a governor's
-  court switch fails closed until a new signed profile is installed, the
-  owner-decided one-immutable-policy-per-registry invariant — statuses in both
-  zero-proof forms, descriptor screening), enforces the §4.1 resource limits
-  and §8 freshness/rollback rules (versioned high-water file), and persists
-  the catalog. Fresh point checks re-prove the policy counter at THEIR anchor
-  too.
+  profile's `arbitrator`/`arbitrator_extra_data`, and the GOVERNOR PIN — slot 3
+  proven equal to the profile's `governor`, all at every anchor, so a governor's
+  policy change, court switch or self-replacement fails closed until a new signed
+  profile is installed — statuses in both zero-proof forms, descriptor
+  screening), enforces the §4.1 resource limits and §8 freshness/rollback rules
+  (versioned high-water file), and persists the catalog. Fresh point checks
+  re-prove the policy version and both pins at THEIR anchor too.
 - `install` — resolves the item, re-screens, does a FRESH point check at the
   latest finalized quorum anchor (only `Registered` installs; "verified,
   non-exhaustive" by construction). NAME-based installs additionally prove
@@ -127,10 +128,16 @@ registry_code_hash = "0x5a6cf793…" # keccak256 of the deployed runtime code
 anchor_rpcs = ["https://rpc-a…", "https://rpc-b…"]  # ≥2, pairwise-distinct normalized ORIGINS
 anchor_operators = ["operator-a", "operator-b"]      # optional; must be pairwise distinct
 snapshot_urls = []               # snapshot providers tried in order (bounded fetch + full verify)
-registration_meta_evidence = "/ipfs/…" # MANDATORY: the DEPLOYMENT policy refs; the on-chain
-clearing_meta_evidence = "/ipfs/…"     # half is metaEvidenceUpdates PROVEN ZERO at every anchor
+registration_meta_evidence = "/ipfs/…" # MANDATORY: the DEPLOYMENT policy refs (version 0); the
+clearing_meta_evidence = "/ipfs/…"     # on-chain half is metaEvidenceUpdates PROVEN ACCEPTED
 arbitrator = "0x9C1d…9002"             # MANDATORY: the court; proven at every anchor (slot 0)
 arbitrator_extra_data = "0x…"           # MANDATORY: court id + jurors; proven byte for byte (slot 1)
+governor = "0x…"                       # MANDATORY: the timelock in front of the Safe; proven (slot 3)
+
+[[policy_updates]]                     # OPTIONAL: policy versions accepted beyond the deployment one
+updates = 1                            # the metaEvidenceUpdates value that announced this version
+registration_meta_evidence = "/ipfs/…" # the references that announcement declared
+clearing_meta_evidence = "/ipfs/…"
 provider_rpc = "https://rpc-c…"  # untrusted snapshot/proof source (verified locally)
 gateways = ["https://ipfs-gateway…"] # untrusted CAR sources (every block hash-checked)
 ```
@@ -140,9 +147,13 @@ values and mutually distinct — a strict SUPERSET of the rules
 `DeployRegistry.s.sol` enforces at deployment (the client additionally
 requires the CID to strictly decode and forbids empty path segments;
 strengthening the deployment script to match is pre-production work). The profile is a locally authenticated deployment manifest:
-form and distinctness are checked here, the on-chain half is the
-`metaEvidenceUpdates == 0` proof, and that these are the references the
-deployment events actually declared is the release manifest's assertion.
+form and distinctness are checked here, the on-chain half is the proof that
+`metaEvidenceUpdates` is 0 or one of the listed `policy_updates` values, and
+that these are the references the deployment and update events actually
+declared is the release manifest's assertion. The policy is mutable behind a
+seven-day timelock (RFC 0001 §9): a change the profile does not list fails
+closed until a new signed profile names its version, and every request keeps
+the version it was submitted under.
 
 Every RPC — anchor sources and proof providers alike — is authenticated against
 the pinned `chain_id` + `genesis_hash` before use (the genesis check is an

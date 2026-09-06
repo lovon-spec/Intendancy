@@ -24,9 +24,11 @@ use crate::schema::Descriptor;
 /// exception); void against any other bytecode.
 pub const ITEM_LIST_SLOT: u64 = 13;
 pub const ITEMS_MAPPING_SLOT: u64 = 14;
-/// `metaEvidenceUpdates` counter — the policy-immutability invariant (owner
-/// decision, spec §11): a Registered verdict is only meaningful under the
-/// deployment policy, so every verification proves this counter is STILL ZERO.
+/// `metaEvidenceUpdates` counter — the policy VERSION (owner decision
+/// 2026-09-06, superseding the immutable-policy rule): a Registered verdict is
+/// only meaningful under a policy the profile has vouched for, so every
+/// verification proves this counter is an ACCEPTED version (0, the deployment
+/// policy, or one the profile lists).
 /// PROVISIONAL pending acceptance of its evidence record
 /// (`docs/spikes/meta-evidence-slot-evidence.md`): pinned by an asserting
 /// probe (getter and slot moving 0→1→2 in lockstep, all other SAMPLED slots
@@ -44,6 +46,12 @@ pub const META_EVIDENCE_UPDATES_SLOT: u64 = 9;
 /// (< 32 bytes, inline) and long (≥ 32 bytes, at `keccak256(1) + i`) forms.
 pub const ARBITRATOR_SLOT: u64 = 0;
 pub const ARBITRATOR_EXTRA_DATA_SLOT: u64 = 1;
+/// `governor` (slot 3): who may queue every other change — the timelock in
+/// front of the Safe (RFC 0001 §9). MANDATORY profile pin, proven at every
+/// anchor (owner decision 2026-09-06). PROVISIONAL like slots 0 and 1, pinned
+/// by the same fork probe (assertion F: slot 3 holds `governor()` and a
+/// governor `changeGovernor` moves exactly that word).
+pub const GOVERNOR_SLOT: u64 = 3;
 /// Bound on the pinned/proven extra data (Kleros encodes court + jurors in 64
 /// bytes; nothing legitimate approaches this).
 pub const MAX_ARBITRATOR_EXTRA_DATA_BYTES: usize = 4096;
@@ -98,9 +106,26 @@ pub struct VerifierProfile {
     /// The pinned arbitrator and its extra data (spec §3; slots 0 and 1).
     pub arbitrator: Address,
     pub arbitrator_extra_data: Bytes,
+    /// The pinned governor (spec §3; slot 3).
+    pub governor: Address,
+    /// Accepted `metaEvidenceUpdates` values beyond 0 (spec §3 `policyVersions`).
+    pub accepted_policy_updates: Vec<u64>,
     pub anchor_block: u64,
     pub anchor_block_hash: B256,
     pub anchor_state_root: B256,
+}
+
+/// Whether a proven `metaEvidenceUpdates` value is a policy version the profile
+/// accepts: 0 (the deployment policy) or one of the listed updates (spec §3).
+pub fn policy_version_accepted(updates: U256, accepted: &[u64]) -> bool {
+    updates == U256::ZERO || accepted.iter().any(|u| U256::from(*u) == updates)
+}
+
+/// "0, 1, 2" — the accepted versions, for error messages.
+pub fn accepted_versions_label(accepted: &[u64]) -> String {
+    let mut v: Vec<String> = vec!["0".into()];
+    v.extend(accepted.iter().map(|u| u.to_string()));
+    v.join(", ")
 }
 
 /// Storage slots a Solidity `bytes` of `len` bytes at `ARBITRATOR_EXTRA_DATA_SLOT`
@@ -477,14 +502,16 @@ pub fn verify(
     }
     // Length slot + policy-counter slot + per-item (list + status) slots.
     // 2N + 2 (length, policy counter) + the arbitrator slot + the extra-data
-    // words the PINNED length occupies (spec §6 step 3c).
+    // words the PINNED length occupies (spec §6 step 3c) + the governor slot
+    // (step 3d).
     let arbitrator_slots =
         1 + extra_data_slots_for_len(profile.arbitrator_extra_data.len()).len() as u64;
     let max_slots = limits
         .max_items
         .saturating_mul(2)
         .saturating_add(2)
-        .saturating_add(arbitrator_slots);
+        .saturating_add(arbitrator_slots)
+        .saturating_add(1);
     if snapshot.proofs.slots.len() as u64 > max_slots {
         bail!(
             "slot proof count {} exceeds bound {max_slots}",
@@ -570,18 +597,34 @@ pub fn verify(
         );
     }
 
-    // Step 3b: policy immutability (spec §6; owner decision). The registry's
-    // metaEvidenceUpdates counter must be proven ZERO — the deployment
-    // MetaEvidence/policy is then the only one ever declared, and the profile's
-    // pinned policy CIDs are what every verdict was judged under. Any update
-    // fails closed: changing policy means deploying a new registry.
+    // Step 3b: policy version (spec §6; owner decision 2026-09-06). The
+    // registry's metaEvidenceUpdates counter must be proven to be a version the
+    // profile accepts: 0, the deployment policy, or one the signed profile lists
+    // with its announced references. A governor's policy change, queued through
+    // the timelock, is accepted only through a new signed profile, never
+    // silently.
     let meta_slot = B256::from(U256::from(META_EVIDENCE_UPDATES_SLOT));
     let updates = check_slot(meta_slot, None)?;
-    if updates != U256::ZERO {
+    if !policy_version_accepted(updates, &profile.accepted_policy_updates) {
         bail!(
-            "policy immutability violated: metaEvidenceUpdates = {updates} — the \
-             registry's policy was changed after deployment (fail closed; V1 pins \
-             one immutable policy per registry)"
+            "policy version {updates} is not one the profile accepts (accepted: {}) — \
+             the governor changed the policy; a new signed profile release must name \
+             the version (fail closed)",
+            accepted_versions_label(&profile.accepted_policy_updates)
+        );
+    }
+    // Step 3d: governor identity (spec §6; owner decision 2026-09-06). Who may
+    // queue every other change is part of the trust context.
+    let gov_word = B256::from(check_slot(B256::from(U256::from(GOVERNOR_SLOT)), None)?);
+    if gov_word[..12].iter().any(|b| *b != 0) {
+        bail!("governor slot holds a non-address word {gov_word} (fail closed)");
+    }
+    let governor = Address::from_word(gov_word);
+    if governor != profile.governor {
+        bail!(
+            "governor pin violated: the registry's governor is {governor}, the profile pins {} — \
+             a changed governor needs a new signed profile release (fail closed)",
+            profile.governor
         );
     }
 

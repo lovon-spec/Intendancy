@@ -22,8 +22,8 @@ use crate::profile::Profile;
 use crate::snapshot::{
     bytes_storage_len, decode_bytes_storage, extra_data_slots_for_len, item_list_slot,
     item_status_slot, verify_account, verify_slot, AccountFields, Anchor, Binding, Limits, Proofs,
-    Row, SlotProof, Snapshot, ARBITRATOR_SLOT, ITEM_LIST_SLOT, META_EVIDENCE_UPDATES_SLOT,
-    SNAPSHOT_VERSION,
+    Row, SlotProof, Snapshot, ARBITRATOR_SLOT, GOVERNOR_SLOT, ITEM_LIST_SLOT,
+    META_EVIDENCE_UPDATES_SLOT, SNAPSHOT_VERSION,
 };
 
 mod abi {
@@ -181,11 +181,12 @@ pub async fn generate_snapshot(
         }
     }
 
-    // Slot set: length + policy-immutability counter + every itemList[i] +
+    // Slot set: length + policy-version counter + governor + every itemList[i] +
     // every status slot.
-    let mut slots: Vec<B256> = Vec::with_capacity(6 + 2 * rows.len());
+    let mut slots: Vec<B256> = Vec::with_capacity(7 + 2 * rows.len());
     slots.push(B256::from(U256::from(ITEM_LIST_SLOT)));
     slots.push(B256::from(U256::from(META_EVIDENCE_UPDATES_SLOT)));
+    slots.push(B256::from(U256::from(GOVERNOR_SLOT)));
     // Arbitrator identity (spec §6 step 3c): slot 0 and the extra-data words the
     // PINNED length occupies; a longer on-chain value fails the verifier's
     // length check before any data word is needed.
@@ -300,8 +301,9 @@ pub async fn point_check(
     let slot = item_status_slot(item_id);
     let meta_slot = B256::from(U256::from(META_EVIDENCE_UPDATES_SLOT));
     let arb_slot = B256::from(U256::from(ARBITRATOR_SLOT));
+    let gov_slot = B256::from(U256::from(GOVERNOR_SLOT));
     let extra_slots = extra_data_slots_for_len(profile.arbitrator_extra_data.len());
-    let mut wanted = vec![slot, meta_slot, arb_slot];
+    let mut wanted = vec![slot, meta_slot, arb_slot, gov_slot];
     wanted.extend(extra_slots.iter().copied());
     let resp = crate::anchor::with_deadline(&format!("{rpc_url} eth_getProof"), async {
         provider
@@ -325,19 +327,21 @@ pub async fn point_check(
         profile.registry_code_hash,
         &limits,
     )?;
-    // Policy immutability at the FRESH anchor too (spec §8): the counter could
-    // have moved between the snapshot's anchor and now.
+    // Policy version at the FRESH anchor too (spec §8): the counter could have
+    // moved between the snapshot's anchor and now.
     let mp = resp
         .storage_proof
         .iter()
         .find(|p| p.key.as_b256() == meta_slot)
         .ok_or_else(|| eyre!("{rpc_url}: no storage proof for metaEvidenceUpdates"))?;
     verify_slot(storage_root, meta_slot, mp.value, &mp.proof, &limits)?;
-    if mp.value != U256::ZERO {
+    let accepted: Vec<u64> = profile.policy_updates.iter().map(|u| u.updates).collect();
+    if !crate::snapshot::policy_version_accepted(mp.value, &accepted) {
         bail!(
-            "policy immutability violated at block {}: metaEvidenceUpdates = {} (fail closed)",
+            "policy version {} at block {} is not one the profile accepts (accepted: {}) (fail closed; a new signed profile must name it)",
+            mp.value,
             anchor.block_number,
-            mp.value
+            crate::snapshot::accepted_versions_label(&accepted)
         );
     }
     // Arbitrator identity at the FRESH anchor too (spec §8): a governor could
@@ -380,6 +384,16 @@ pub async fn point_check(
         bail!(
             "arbitrator extra data pin violated at block {}: the court or juror count changed (fail closed; a changed court needs a new signed profile)",
             anchor.block_number
+        );
+    }
+    // Governor identity at the FRESH anchor too (spec §8, §6 step 3d).
+    let gov_word = B256::from(proven(gov_slot)?);
+    if gov_word[..12].iter().any(|b| *b != 0) || Address::from_word(gov_word) != profile.governor {
+        bail!(
+            "governor pin violated at block {}: the registry's governor is {}, the profile pins {} (fail closed; a changed governor needs a new signed profile)",
+            anchor.block_number,
+            Address::from_word(gov_word),
+            profile.governor
         );
     }
     let sp = resp

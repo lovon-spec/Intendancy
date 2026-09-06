@@ -105,6 +105,7 @@ registry = "$REG"
 registry_code_hash = "$CODEHASH"
 arbitrator = "$(cast call $REG "arbitrator()(address)" --rpc-url $A)"
 arbitrator_extra_data = "$(cast call $REG "arbitratorExtraData()(bytes)" --rpc-url $A)"
+governor = "$(cast call $REG "governor()(address)" --rpc-url $A)"
 anchor_rpcs = ["$A", "$B"]
 anchor_operators = ["local-anvil-a", "local-anvil-b"]
 registration_meta_evidence = "/ipfs/$CID/registration.json"
@@ -144,4 +145,40 @@ set -e
 [ $rc -eq 1 ] || { echo "FATAL: sticky suspension must keep audit failing, got $rc"; exit 1; }
 ( cd "$work" && "$INTEND" "${P[@]}" enable ./skill )
 ( cd "$work" && "$INTEND" "${P[@]}" audit )
+echo "== policy version and governor pins (owner decision 2026-09-06) =="
+# The governor (the deployer in mock mode) announces a new policy: the counter moves to 1.
+cast send $REG "changeMetaEvidence(string,string)" "/ipfs/$CID/registration-v1.json" "/ipfs/$CID/clearing-v1.json" --private-key $KEY --rpc-url $A --json > /dev/null
+settle
+set +e
+( "$INTEND" "${P[@]}" update > "$work/update-v1-old.log" 2>&1 ); rc=$?
+set -e
+[ $rc -eq 1 ] || { echo "FATAL: the old profile must fail closed on policy version 1, got $rc"; cat "$work/update-v1-old.log"; exit 1; }
+grep -q "policy version 1 is not one the profile accepts" "$work/update-v1-old.log" || { echo "FATAL: unexpected failure text"; cat "$work/update-v1-old.log"; exit 1; }
+echo "old profile fails closed on policy version 1: ok"
+# A new signed profile that names version 1 verifies (a new context: fresh state dir).
+cp "$work/profile.toml" "$work/profile-v1.toml"
+cat >> "$work/profile-v1.toml" <<EOF
+
+[[policy_updates]]
+updates = 1
+registration_meta_evidence = "/ipfs/$CID/registration-v1.json"
+clearing_meta_evidence = "/ipfs/$CID/clearing-v1.json"
+EOF
+P1=(--profile "$work/profile-v1.toml" --state-dir "$work/state-v1")
+"$INTEND" "${P1[@]}" update
+echo "profile naming version 1 verifies: ok"
+# A governor switch fails closed under that profile until a release pins the new governor.
+ACCT1=0x70997970C51812dc3A010C7d01b50e0d17dc79C8
+KEY1=0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d
+cast send $REG "changeGovernor(address)" $ACCT1 --private-key $KEY --rpc-url $A --json > /dev/null
+settle
+set +e
+( "$INTEND" "${P1[@]}" update > "$work/update-gov.log" 2>&1 ); rc=$?
+set -e
+[ $rc -eq 1 ] || { echo "FATAL: a switched governor must fail closed, got $rc"; cat "$work/update-gov.log"; exit 1; }
+grep -q "governor pin violated" "$work/update-gov.log" || { echo "FATAL: unexpected failure text"; cat "$work/update-gov.log"; exit 1; }
+cast send $REG "changeGovernor(address)" "$(cast wallet address --private-key $KEY)" --private-key $KEY1 --rpc-url $A --json > /dev/null
+settle
+"$INTEND" "${P1[@]}" update
+echo "governor switch fails closed, verifies again once restored: ok"
 echo "SMOKE OK (work dir: $work)"

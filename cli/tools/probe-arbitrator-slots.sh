@@ -12,7 +12,9 @@
 #      to the dummy and slot 1 to the SHORT form (data inline, low byte len*2),
 #      while every other SAMPLED slot (2..16) is byte-identical;
 #   E. a governor changeArbitrator back to the arbitrator with 64-byte data
-#      restores the long form and the data words, again with slots 2..16 unchanged.
+#      restores the long form and the data words, again with slots 2..16 unchanged;
+#   F. slot 3 holds governor(), a governor changeGovernor moves exactly slot 3
+#      (slots 0..2 and 4..16 unchanged), and the new governor can move it back.
 # Any violated assertion exits nonzero. A transcript of asserted values is written
 # to $work/transcript.txt (sha256 printed; copied to $PROBE_OUT if set).
 # Requires anvil, cast, python3, and the Gate 2 spike crate.
@@ -78,6 +80,28 @@ S0=$(word 0); S1=$(word 1); D0=$(word $K1); D1=$(word $K1B); log "slot0=$S0 slot
 [ "$D0" = "0x0000000000000000000000000000000000000000000000000000000000000013" ] || fail "E: data0"
 [ "$D1" = "0x0000000000000000000000000000000000000000000000000000000000000003" ] || fail "E: data1"
 [ "$(sample)" = "$BASE" ] || fail "E: another sampled slot moved"
+
+log "== F. slot 3 = governor(); changeGovernor moves exactly slot 3 =="
+GOV=$(cast call $REG "governor()(address)" --rpc-url $RPC); S3=$(word 3); log "governor()=$GOV slot3=$S3"
+python3 - "$GOV" "$S3" <<'PY' || fail "F: slot 3 is not the governor"
+import sys
+gov, s3 = [x.lower() for x in sys.argv[1:]]
+assert s3 == "0x" + "0"*24 + gov[2:], "slot 3 is not the governor"
+print("F ok")
+PY
+sample_no3() { for s in 0 1 $(seq 2 16); do [ "$s" = 3 ] && continue; echo "$s:$(cast storage $REG $s --rpc-url $RPC)"; done; }
+BASE3=$(sample_no3)
+ACCT1=0x70997970C51812dc3A010C7d01b50e0d17dc79C8
+KEY1=0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d
+cast send $REG "changeGovernor(address)" $ACCT1 --private-key $KEY --rpc-url $RPC --json > "$work/tx3.json"
+S3=$(word 3); log "after changeGovernor(acct1): slot3=$S3"
+[ "$S3" = "0x00000000000000000000000070997970c51812dc3a010c7d01b50e0d17dc79c8" ] || fail "F: slot 3 after changeGovernor"
+[ "$(sample_no3)" = "$BASE3" ] || fail "F: another sampled slot moved"
+DEPLOYER=$(cast wallet address --private-key $KEY)
+cast send $REG "changeGovernor(address)" $DEPLOYER --private-key $KEY1 --rpc-url $RPC --json > "$work/tx4.json"
+S3=$(word 3); log "after changeGovernor(deployer) by acct1: slot3=$S3"
+[ "$S3" = "0x000000000000000000000000$(echo $DEPLOYER | cut -c3- | tr 'A-F' 'a-f')" ] || fail "F: slot 3 not restored"
+[ "$(sample_no3)" = "$BASE3" ] || fail "F: another sampled slot moved on restore"
 
 log "ALL ASSERTIONS PASSED"
 echo "transcript sha256: $(shasum -a 256 "$T" | cut -d' ' -f1)"
