@@ -6,6 +6,7 @@ import {console} from "forge-std/console.sol";
 import {Vm} from "forge-std/Vm.sol";
 import {IGTCRFactory} from "../src/interfaces/IGTCRFactory.sol";
 import {MockArbitrator} from "../src/mock/MockArbitrator.sol";
+import {TimelockController} from "@openzeppelin/contracts/governance/TimelockController.sol";
 
 /// @title Deploy Intendancy Registry
 /// @dev Deploys an unmodified GeneralizedTCR via the official GTCRFactory.
@@ -24,6 +25,10 @@ contract DeployRegistry is Script {
 
     uint256 constant GNOSIS_CHAIN_ID = 100;
     uint256 constant CURATION_COURT_ID = 19;
+    /// The governor is a TimelockController in front of the Safe (launch-readiness row 14):
+    /// every governor action, the policy included, is queued publicly and executes no
+    /// earlier than this delay.
+    uint256 constant MIN_GOVERNOR_DELAY_SECONDS = 7 days;
 
     struct DeploymentConfig {
         bool isProduction;
@@ -107,7 +112,7 @@ contract DeployRegistry is Script {
             config.isProduction = true;
             config.arbitratorImplementation = _validateProductionChain();
             config.governor = vm.envAddress("GOVERNOR");
-            require(config.governor != address(0), "GOVERNOR must not be zero");
+            _validateTimelockGovernor(config.governor, vm.envAddress("GOVERNOR_PROPOSER"), deployer);
 
             config.courtId = CURATION_COURT_ID;
             config.minJurors = vm.envUint("MIN_JURORS");
@@ -169,6 +174,24 @@ contract DeployRegistry is Script {
             implementation.codehash == XKLEROS_LIQUID_IMPLEMENTATION_CODEHASH,
             "Unexpected arbitrator implementation codehash"
         );
+    }
+
+    /// @dev Production governors are timelocks, never keys: the registry's governor must be
+    ///      a self-administered TimelockController with at least the minimum delay, the Safe as
+    ///      proposer and canceller, open execution, and no admin held by the Safe or the deployer.
+    ///      A registry whose policy can change with notice needs exactly this, and nothing less.
+    function _validateTimelockGovernor(address governor, address proposer, address deployer) internal view {
+        require(governor != address(0), "GOVERNOR must not be zero");
+        require(governor.code.length > 0, "GOVERNOR must be a contract: the timelock in front of the Safe");
+        require(proposer != address(0), "GOVERNOR_PROPOSER must not be zero");
+        TimelockController timelock = TimelockController(payable(governor));
+        require(timelock.getMinDelay() >= MIN_GOVERNOR_DELAY_SECONDS, "GOVERNOR timelock delay must be at least 7 days");
+        require(timelock.hasRole(timelock.PROPOSER_ROLE(), proposer), "GOVERNOR_PROPOSER must hold the timelock proposer role");
+        require(timelock.hasRole(timelock.CANCELLER_ROLE(), proposer), "GOVERNOR_PROPOSER must hold the timelock canceller role");
+        require(timelock.hasRole(timelock.EXECUTOR_ROLE(), address(0)), "GOVERNOR timelock execution must be open");
+        require(timelock.hasRole(timelock.DEFAULT_ADMIN_ROLE(), governor), "GOVERNOR timelock must administer itself");
+        require(!timelock.hasRole(timelock.DEFAULT_ADMIN_ROLE(), proposer), "GOVERNOR_PROPOSER must not administer the timelock");
+        require(!timelock.hasRole(timelock.DEFAULT_ADMIN_ROLE(), deployer), "the deployer must not administer the timelock");
     }
 
     function _validateMetaEvidenceUri(string memory uri) internal pure {

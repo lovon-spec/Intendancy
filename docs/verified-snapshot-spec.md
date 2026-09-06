@@ -436,7 +436,17 @@ Still open before the spec can claim 1.0:
    registry's `metaEvidenceUpdates` counter is still ZERO (slot 9, §5) and
    fails closed on any update. Changing policy means deploying a new registry.
    Implemented in the `intend` CLI with a genuinely-updated-counter rejection
-   fixture.
+   fixture. **SUPERSEDED (owner, 2026-09-06): the policy is mutable behind a
+   timelock** (RFC 0001 §9; launch-readiness row 14). The registry's governor
+   is a TimelockController with the Safe as proposer and a delay of at least
+   seven days; Classic GTCR binds every request to the meta-evidence current
+   at its submission; the consumer profile lists the ACCEPTED policy versions
+   (counter value plus both references) and pins the governor (slot 3); §6
+   step 3b becomes "the proven counter is an accepted version", §8's fresh
+   check re-proves it and the governor, and a version the profile does not
+   list fails closed until a new signed profile release. Contracts and
+   tooling: `feat/timelock-governor`; the CLI and the text of §3, §5, §6 and
+   §8: `feat/cli-policy-versions`.
 7. ~~OWNER DECISION — semantic file types in trees.~~ **DECIDED (owner,
    2026-08-24): forbidden in V1.** Listing policy v2.1 prohibits symlinks in
    trees and declares executable bits non-semantic (scripts run via explicit

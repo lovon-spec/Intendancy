@@ -4,6 +4,7 @@ pragma solidity ^0.8.0;
 import {Test} from "forge-std/Test.sol";
 import {Vm} from "forge-std/Vm.sol";
 import {DeployRegistry} from "../script/DeployRegistry.s.sol";
+import {TimelockController} from "@openzeppelin/contracts/governance/TimelockController.sol";
 
 contract DeployRegistryHarness is DeployRegistry {
     function loadConfig(address deployer) external view returns (DeploymentConfig memory) {
@@ -20,6 +21,10 @@ contract DeployRegistryHarness is DeployRegistry {
 
     function validateProductionChain() external view returns (address) {
         return _validateProductionChain();
+    }
+
+    function validateTimelockGovernor(address governor, address proposer, address deployer) external view {
+        _validateTimelockGovernor(governor, proposer, deployer);
     }
 }
 
@@ -80,6 +85,48 @@ contract DeployRegistryTest is Test {
         entries[0].topics[1] = bytes32(uint256(uint160(expected)));
 
         assertEq(harness.registryFromLogs(entries), expected);
+    }
+
+    function _timelock(uint256 delay, address proposer, address executor, address admin)
+        internal
+        returns (TimelockController)
+    {
+        address[] memory proposers = new address[](1);
+        proposers[0] = proposer;
+        address[] memory executors = new address[](1);
+        executors[0] = executor;
+        return new TimelockController(delay, proposers, executors, admin);
+    }
+
+    function test_productionGovernorMustBeASelfAdministeredTimelock() public {
+        address safe = makeAddr("safe");
+        address deployer = makeAddr("deployer");
+
+        TimelockController good = _timelock(7 days, safe, address(0), address(0));
+        harness.validateTimelockGovernor(address(good), safe, deployer);
+
+        vm.expectRevert("GOVERNOR must be a contract: the timelock in front of the Safe");
+        harness.validateTimelockGovernor(safe, safe, deployer);
+
+        TimelockController short = _timelock(1 days, safe, address(0), address(0));
+        vm.expectRevert("GOVERNOR timelock delay must be at least 7 days");
+        harness.validateTimelockGovernor(address(short), safe, deployer);
+
+        TimelockController otherProposer = _timelock(7 days, makeAddr("other"), address(0), address(0));
+        vm.expectRevert("GOVERNOR_PROPOSER must hold the timelock proposer role");
+        harness.validateTimelockGovernor(address(otherProposer), safe, deployer);
+
+        TimelockController closedExecution = _timelock(7 days, safe, safe, address(0));
+        vm.expectRevert("GOVERNOR timelock execution must be open");
+        harness.validateTimelockGovernor(address(closedExecution), safe, deployer);
+
+        TimelockController safeAdmin = _timelock(7 days, safe, address(0), safe);
+        vm.expectRevert("GOVERNOR_PROPOSER must not administer the timelock");
+        harness.validateTimelockGovernor(address(safeAdmin), safe, deployer);
+
+        TimelockController deployerAdmin = _timelock(7 days, safe, address(0), deployer);
+        vm.expectRevert("the deployer must not administer the timelock");
+        harness.validateTimelockGovernor(address(deployerAdmin), safe, deployer);
     }
 
     function test_productionPinsMatchCurrentGnosisDeployment() public {
