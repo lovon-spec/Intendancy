@@ -130,7 +130,19 @@ This decision does not freeze the registry address, runtime code hash, arbitrato
 
 The registry is deployed as neutral infrastructure named **Agent Skills Registry**. Its MetaEvidence, listing policy, logo and juror evidence display carry no product branding; Intendancy names the consumer product (the `intend` distribution, the website, the profile). The policy discloses the governor and its limits, and describes the wider-governance path as the registry's community without naming an organization. Nothing in the contracts or the deployment changes; names live in MetaEvidence and documents, which are immutable per registry, which is why this was decided before anything was pinned.
 
-## 9. Historical record
+## 9. Amendment: the policy is mutable behind a timelock (owner decision, 2026-09-06)
+
+The decision of 2026-08-24 quoted in section 5, one immutable policy per registry with consumers proving the registry's `metaEvidenceUpdates` counter zero, is superseded.
+
+The registry's governor is a TimelockController with the Safe as proposer and canceller, open execution, self-administration, and a delay of at least seven days. Every governor action, the MetaEvidence and policy included, is queued publicly and takes effect no earlier than the delay. Classic GTCR stores the meta-evidence id on every request, so a policy change applies only to requests submitted after it takes effect; items registered and disputes opened under an earlier version keep that version, for jurors and for consumers alike.
+
+Consumers keep their fail-closed model with one change: the signed profile lists the policy versions it accepts, each as the counter value and the two MetaEvidence references announced for it, and pins the governor. A full verification and every fresh point check prove the counter and the governor at the anchor; a counter value the profile does not list, or a governor other than the pinned timelock, fails closed until a new signed profile release names it. The context id that binds local state covers the accepted versions and the governor.
+
+Why: a one-shot registry could not take a severity ladder, a credit module, or any correction without re-listing every skill; every Kleros list already runs a mutable policy; and the timelock turns "announced ahead of time" from a promise into a property, which is also what makes a one-of-one Safe an acceptable proposer. What does not change: verifiers still report anchor strength, enumeration scope and freshness separately, still refuse anything their profile has not named, and still install exactly the bytes a verified descriptor commits to.
+
+Normative text: verified-snapshot-spec sections 3, 5, 6, 8 and 11; launch-readiness row 14; the policy's Governance section.
+
+## 10. Historical record
 
 The following documents are retained as the review trail:
 

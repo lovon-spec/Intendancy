@@ -22,6 +22,7 @@ The facts these proposals rest on were checked against Gnosis mainnet on 2026-09
 | 11 | Seed skills | Five Intendant skills whose trees already exist on this machine: `intendant-coordination`, `intendant-agenda`, `intendant-memory`, `intendant-cli`, `show-then-ask`. Candidates for a second batch: `intendant-log-search`, `intendant-remote-compute`, `visual-collaboration`, `peer-displays`. | Real skills make the first install real. Five listings lock 258 xDAI for the period, returned on execution. Each tree needs a check against the policy before submission: spec-defined frontmatter fields only, no symlinks, under 2 MiB, CIDv1. | decision |
 | 12 | Frontend hosting | The site on a static host with HTTPS and a custom domain; the evidence display bundle on IPFS regardless, because the court loads it from there. | The site is static and reads the chain and the public subgraph; nothing needs a server. | decision |
 | 13 | Watchdog at launch | We are the watchdog: a monitor on `RequestSubmitted` events plus manual review, and a challenger wallet funded with at least two arbitration fees. | A new list has no deposit-hunters yet; the policy's availability rule and the challenge period only protect the list if someone is watching. | owner funds the wallet |
+| 14 | Governor timelock, and with it a mutable policy | The registry's governor is a TimelockController, never the Safe directly: the Safe proposes and may cancel, anyone may execute a matured operation, the timelock administers itself, and every governor action, deposits, challenge period, stake multipliers, the arbitrator and its extra data, the MetaEvidence and the governor itself, takes effect no earlier than seven days after it is queued. The timelock's address is `GOVERNOR`; the Safe is `GOVERNOR_PROPOSER` and fills `[GOVERNOR_ADDRESS]` in the policy, the timelock fills `[TIMELOCK_ADDRESS]`. The policy therefore becomes mutable with notice: Classic GTCR stores the meta-evidence id on every request, so items and disputes keep the policy they were submitted under, and the CLI accepts the policy versions its signed profile lists and fails closed on any other. | Decided 2026-09-06, reversing the immutable-policy decision of 2026-08-24. A one-shot registry could not take the severity ladder, the credit module or any correction without re-listing every skill, and every Kleros list already runs a mutable policy; the timelock turns "announced ahead of time" into a contract property and is what makes a one-of-one Safe an acceptable proposer. | decided; contracts and tooling in `feat/timelock-governor`, the CLI's accepted-version rule in `feat/cli-policy-versions` |
 
 ## 2. Engineering before the deployment
 
@@ -34,13 +35,15 @@ The facts these proposals rest on were checked against Gnosis mainnet on 2026-09
 | Frontend production environment and build; CLI profile template with everything except the post-deployment values | rows 8, 12 | me |
 | RFC 0001 amendment: arbitrator switching as a governance event, with disclosure through the profile | nothing | me |
 | Seed-tree preparation: policy check, CIDv1 trees, pinning | rows 8, 11 | me, owner pins |
+| Timelock governor: `DeployTimelock`, production-mode checks that `GOVERNOR` is a self-administered timelock with the Safe as proposer, `tools/launch/verify-timelock.sh` | row 14 | done in `feat/timelock-governor`; owner deploys |
+| CLI: accept the policy versions the signed profile lists instead of requiring a zero update counter; pin the governor (slot 3) at every anchor; spec sections 3, 5, 6 and 8 | row 14 | me, `feat/cli-policy-versions` |
 | The Safe and the pinning account | nothing | owner |
 
 Not on the critical path: the binary framing spike, strict light-client mode, the installer freeze items, and Intendment's adoption. None touches anything on chain.
 
 ## 3. Deployment day, in order
 
-1. Owner: deploy the Safe if not done; fund the deployer with gas; run the deploy script in production mode with the approved environment file.
+1. Owner: deploy the Safe if not done; deploy the timelock with `DeployTimelock` (proposer the Safe, delay 604800 seconds) and verify it with `tools/launch/verify-timelock.sh`; fund the deployer with gas; run the registry deploy script in production mode with the approved environment file, `GOVERNOR` the timelock and `GOVERNOR_PROPOSER` the Safe.
 2. Me: take the registry address from the factory's mined `NewGTCR` log, never from the simulation; fetch its code and check the hash against the spec's frozen value; stop if it differs.
 3. Me: read the two `MetaEvidence` events from the same receipt and pin their references in the profile; verify the governor, the arbitrator, the extra data, the deposits and the period on chain against the approved values.
 4. Me: fill the CLI profile and the frontend environment; build and publish the site; publish the profile in a signed release.
@@ -52,7 +55,9 @@ Not on the critical path: the binary framing spike, strict light-client mode, th
 | Variable | Value under the proposals above |
 |---|---|
 | `DEPLOYMENT_MODE` | `production` |
-| `GOVERNOR` | the Safe |
+| `GOVERNOR` | the timelock (row 14) |
+| `GOVERNOR_PROPOSER` | the Safe; the deploy script checks it holds the timelock's proposer and canceller roles and no admin role |
+| `TIMELOCK_PROPOSER`, `TIMELOCK_MIN_DELAY_SECONDS` (for `DeployTimelock`) | the Safe, 604800 |
 | `SUBMISSION_BASE_DEPOSIT_WEI`, `REMOVAL_BASE_DEPOSIT_WEI` | 30 xDAI each |
 | `SUBMISSION_CHALLENGE_BASE_DEPOSIT_WEI`, `REMOVAL_CHALLENGE_BASE_DEPOSIT_WEI` | 0 |
 | `CHALLENGE_PERIOD_SECONDS` | 302400 |
