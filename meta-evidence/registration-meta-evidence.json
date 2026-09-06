@@ -40,7 +40,7 @@
       },
       {
         "label": "Runtimes",
-        "description": "Comma-separated supported agent runtimes (for example, claude_code,generic).",
+        "description": "Supported agent runtimes: lowercase snake_case identifiers (a letter, then letters, digits or underscores, at most 32 characters), comma-separated without spaces, unique, in ascending order, at most 16; generic only on its own (for example claude_code,cursor or generic).",
         "type": "text",
         "isIdentifier": false
       },
