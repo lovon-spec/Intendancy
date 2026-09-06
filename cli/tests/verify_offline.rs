@@ -26,7 +26,7 @@ fn pristine_fixture_verifies_with_all_statuses_and_exclusion() {
     let f = build_fixture();
     let stats = verify(&f.snapshot, &f.profile, &Limits::default()).expect("fixture verifies");
     assert_eq!(stats.items, 4);
-    assert_eq!(stats.slot_proofs_checked, 14); // length + policy counter + 4 list + 4 status
+    assert_eq!(stats.slot_proofs_checked, 15); // length + policy counter + arbitrator (3) + governor + 4 list + 4 status
     for status in [0u8, 1, 2, 3] {
         assert!(f.snapshot.rows.iter().any(|r| r.status == status));
     }
@@ -99,20 +99,74 @@ fn eoa_snapshot_verifies_under_a_profile_that_legitimately_pins_it() {
         registry_code_hash: keccak_empty(),
         arbitrator: alloy::primitives::Address::ZERO,
         arbitrator_extra_data: alloy::primitives::Bytes::new(),
+        governor: alloy::primitives::Address::ZERO,
         ..f.profile.clone()
     };
     let stats = verify(&f.eoa_snapshot, &p, &Limits::default()).expect("honest empty catalog");
     assert_eq!(stats.items, 0);
-    assert_eq!(stats.slot_proofs_checked, 4); // length + policy counter + arbitrator + extra data
+    assert_eq!(stats.slot_proofs_checked, 5); // length + policy counter + arbitrator + extra data + governor
 }
 
 #[test]
-fn rejects_updated_policy_counter() {
-    // Owner decision: immutable policy per registry. A registry whose
-    // metaEvidenceUpdates counter moved (its trie genuinely holds the nonzero
-    // value, honestly proven) must fail closed.
+fn rejects_a_policy_version_the_profile_does_not_list() {
+    // Owner decision 2026-09-06: the policy is mutable behind a timelock, and
+    // a consumer accepts exactly the versions its signed profile lists. A
+    // registry whose metaEvidenceUpdates counter moved (its trie genuinely
+    // holds the nonzero value, honestly proven) fails closed under a profile
+    // that lists nothing beyond the deployment version …
     let f = build_fixture_with_policy_updates(1);
-    expect_err(&f.snapshot, &f.profile, "policy immutability violated");
+    expect_err(
+        &f.snapshot,
+        &f.profile,
+        "policy version 1 is not one the profile accepts (accepted: 0)",
+    );
+    // … and under one that lists a DIFFERENT version.
+    let p = VerifierProfile {
+        accepted_policy_updates: vec![2],
+        ..f.profile.clone()
+    };
+    expect_err(&f.snapshot, &p, "accepted: 0, 2");
+}
+
+#[test]
+fn accepts_a_listed_policy_version() {
+    let f = build_fixture_with_policy_updates(1);
+    let p = VerifierProfile {
+        accepted_policy_updates: vec![1],
+        ..f.profile.clone()
+    };
+    let stats = verify(&f.snapshot, &p, &Limits::default()).expect("listed version verifies");
+    assert_eq!(stats.items, 4);
+    // Listing a later version does not accept an earlier unlisted one, and
+    // listing several accepts each of them.
+    let f3 = build_fixture_with_policy_updates(3);
+    let p = VerifierProfile {
+        accepted_policy_updates: vec![1, 3],
+        ..f3.profile.clone()
+    };
+    verify(&f3.snapshot, &p, &Limits::default()).expect("3 is listed");
+    let f2 = build_fixture_with_policy_updates(2);
+    let p2 = VerifierProfile {
+        accepted_policy_updates: vec![1, 3],
+        ..f2.profile.clone()
+    };
+    expect_err(
+        &f2.snapshot,
+        &p2,
+        "policy version 2 is not one the profile accepts",
+    );
+}
+
+#[test]
+fn rejects_a_governor_the_profile_does_not_pin() {
+    // Owner decision 2026-09-06: the governor (the timelock) is pinned and
+    // proven at every anchor; a switch fails closed until a new profile.
+    let f = build_fixture();
+    let p = VerifierProfile {
+        governor: alloy::primitives::Address::repeat_byte(0x55),
+        ..f.profile.clone()
+    };
+    expect_err(&f.snapshot, &p, "governor pin violated");
 }
 
 #[test]
@@ -298,7 +352,7 @@ fn rejects_missing_arbitrator_proofs() {
 fn short_form_extra_data_verifies_and_is_pinned() {
     let f = build_fixture_with(0, &[0xaa, 0xbb, 0xcc]);
     let stats = verify(&f.snapshot, &f.profile, &Limits::default()).expect("short form");
-    assert_eq!(stats.slot_proofs_checked, 12); // length + counter + arbitrator + main word + 4 + 4
+    assert_eq!(stats.slot_proofs_checked, 13); // length + counter + arbitrator + main word + governor + 4 + 4
 
     let mut p = f.profile.clone();
     p.arbitrator_extra_data = vec![0xaa, 0xbb, 0xcd].into();

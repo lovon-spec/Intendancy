@@ -15,7 +15,7 @@ use intend::schema::Descriptor;
 use intend::snapshot::{
     extra_data_slots_for_len, item_list_slot, item_status_slot, AccountFields, Anchor, Binding,
     Proofs, Row, SlotProof, Snapshot, VerifierProfile, ARBITRATOR_EXTRA_DATA_SLOT, ARBITRATOR_SLOT,
-    ITEM_LIST_SLOT, META_EVIDENCE_UPDATES_SLOT, SNAPSHOT_VERSION,
+    GOVERNOR_SLOT, ITEM_LIST_SLOT, META_EVIDENCE_UPDATES_SLOT, SNAPSHOT_VERSION,
 };
 
 pub const CHAIN_ID: u64 = 100;
@@ -153,8 +153,15 @@ pub fn court_extra_data(court: u64, jurors: u64) -> Vec<u8> {
     v
 }
 
+/// The fixture registry's governor (slot 3): the timelock in front of the Safe
+/// in production; any fixed address here.
+pub fn fixture_governor() -> Address {
+    Address::repeat_byte(0x44)
+}
+
 /// `meta_evidence_updates` != 0 models a registry whose policy was changed
-/// after deployment — verification must fail closed on it.
+/// after deployment — verification must fail closed on it unless the profile
+/// lists that version.
 #[allow(dead_code)]
 pub fn build_fixture_with_policy_updates(meta_evidence_updates: u64) -> Fixture {
     build_fixture_with(meta_evidence_updates, &court_extra_data(19, 3))
@@ -209,6 +216,12 @@ pub fn build_fixture_with(meta_evidence_updates: u64, extra_data: &[u8]) -> Fixt
             storage.insert(*slot, alloy::rlp::encode(*word));
         }
     }
+    // Governor identity: slot 3 (spec §6 step 3d).
+    let gov_slot = B256::from(U256::from(GOVERNOR_SLOT));
+    storage.insert(
+        gov_slot,
+        alloy::rlp::encode(U256::from_be_bytes(fixture_governor().into_word().0)),
+    );
     if meta_evidence_updates != 0 {
         storage.insert(
             meta_slot,
@@ -229,7 +242,7 @@ pub fn build_fixture_with(meta_evidence_updates: u64, extra_data: &[u8]) -> Fixt
     }
     // Proof targets: every slot the spec requires, INCLUDING absent ones (the
     // removed item's status slot, and — at zero updates — the policy counter).
-    let mut targets: Vec<B256> = vec![len_slot, meta_slot, arb_slot];
+    let mut targets: Vec<B256> = vec![len_slot, meta_slot, arb_slot, gov_slot];
     targets.extend(extra_words.iter().map(|(slot, _)| *slot));
     for (i, id) in ids.iter().enumerate() {
         targets.push(item_list_slot(i as u64));
@@ -322,6 +335,8 @@ pub fn build_fixture_with(meta_evidence_updates: u64, extra_data: &[u8]) -> Fixt
         registry_code_hash: registry_code_hash(),
         arbitrator: fixture_arbitrator(),
         arbitrator_extra_data: Bytes::from(extra_data.to_vec()),
+        governor: fixture_governor(),
+        accepted_policy_updates: Vec::new(),
         anchor_block: anchor.block_number,
         anchor_block_hash: anchor.block_hash,
         anchor_state_root: anchor.state_root,
@@ -366,6 +381,11 @@ pub fn build_fixture_with(meta_evidence_updates: u64, extra_data: &[u8]) -> Fixt
                 },
                 SlotProof {
                     slot: B256::from(U256::from(ARBITRATOR_EXTRA_DATA_SLOT)),
+                    value: U256::ZERO,
+                    path: Vec::new(),
+                },
+                SlotProof {
+                    slot: gov_slot,
                     value: U256::ZERO,
                     path: Vec::new(),
                 },
