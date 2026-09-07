@@ -1,0 +1,30 @@
+# The Agent Skills Registry on Gnosis Chain: the deployment manifest the intend CLI trusts.
+#
+# Every value here was pinned from the mined deployment (Safe transaction nonce 2, tx
+# 0x7cc3592a053a1a0420a71796c853b1a10e248faf2d0aca806d7d777b79f08a39, block 48119952, 2026-09-07)
+# and is proven against a finalized anchor on every run; nothing in this file is ever fetched
+# from a provider. Consumers install it from a signed release and verify the release first.
+chain_id = 100
+genesis_hash = "0x4f1dd23188aab3a76b463e4af801b52b1248ef073c648cbdc4c9333d3da79756"
+registry = "0x67DBE6A9597635074546e08B92eE617bF02168f9"
+registry_code_hash = "0x5a6cf79325018f60d2aa63ca57c5396ae760b2ae57d4572c631778b3e9085d7d"
+# xKlerosLiquid; extra data = court 19 (xDai Curation, hidden voting), three jurors.
+arbitrator = "0x9C1dA9A04925bDfDedf0f6421bC7EEa8305F9002"
+arbitrator_extra_data = "0x00000000000000000000000000000000000000000000000000000000000000130000000000000000000000000000000000000000000000000000000000000003"
+# The TimelockController in front of the governance Safe (seven-day delay).
+governor = "0xc8Ba4c0AD3554EDB0a9A4C8D73Bf87410A313ADa"
+# Header-quorum anchor sources: two operators in distinct trust domains, both with current
+# finality. Sources must all answer; a lagging or flaky source lowers or breaks the anchor.
+anchor_rpcs = ["https://rpc.gnosischain.com", "https://gnosis-rpc.publicnode.com"]
+anchor_operators = ["gnosis-gateway-fm", "publicnode"]
+# No snapshot provider yet: update self-generates from provider_rpc and verifies locally.
+snapshot_urls = []
+# The two MetaEvidence references the deployment emitted (policy version 0).
+registration_meta_evidence = "/ipfs/bafybeifcbrqdv7nh6d2smr33knp2kcncxaq44rxbwogtp57vnpm6f7ikfq/registration-meta-evidence.json"
+clearing_meta_evidence = "/ipfs/bafybeihnkauoj3okjd5lmgsbow6hrigxvf5yw6dfvmgzpcnwe4x5jjfk3u/clearing-meta-evidence.json"
+# Untrusted proof provider. It must serve eth_getProof at finalized depth (about 40 to 100
+# blocks behind head on Gnosis): PublicNode and dRPC do; the foundation RPC keeps only about
+# 32 blocks of state for proofs.
+provider_rpc = "https://gnosis-rpc.publicnode.com"
+# Untrusted CAR gateways, tried in order; every block is hash-verified.
+gateways = ["https://trustless-gateway.link", "https://dweb.link", "https://ipfs.io"]
