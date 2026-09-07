@@ -67,7 +67,7 @@ The MetaEvidence files reference three IPFS paths: the evidence display (`/ipfs/
 ```bash
 tools/launch/build-display.sh display.car                 # builds frontend/dist-evidence for production, prints the CID
 tools/launch/car-of.sh --wrap meta-evidence/agent-skills-registry-logo.svg logo.car
-tools/launch/render-policy.sh listing-policy.pdf          # after [GOVERNOR_ADDRESS] is filled; keep the file
+tools/launch/render-policy.sh listing-policy.pdf          # the policy has no placeholders left; keep the file
 tools/launch/car-of.sh --wrap listing-policy.pdf policy.car
 tools/launch/verify-car.sh display.car <cid>              # what a consumer checks: CID forms, hashes, completeness
 tools/launch/pin-filebase.sh display.car <bucket>         # S3 CAR import; compares the service's CID with the CAR root

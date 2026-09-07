@@ -140,7 +140,7 @@ Consumers keep their fail-closed model with one change: the signed profile lists
 
 Why: a one-shot registry could not take a severity ladder, a credit module, or any correction without re-listing every skill; every Kleros list already runs a mutable policy; and the timelock turns "announced ahead of time" from a promise into a property, which is also what makes a one-of-one Safe an acceptable proposer. What does not change: verifiers still report anchor strength, enumeration scope and freshness separately, still refuse anything their profile has not named, and still install exactly the bytes a verified descriptor commits to.
 
-Normative text: verified-snapshot-spec sections 3, 5, 6, 8 and 11; launch-readiness row 14; the policy's Governance section.
+Normative text: verified-snapshot-spec sections 3, 5, 6, 8 and 11; launch-readiness row 14; the policy's Amendments section.
 
 ## 10. Historical record
 
