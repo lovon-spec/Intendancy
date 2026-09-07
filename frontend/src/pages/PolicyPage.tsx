@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-const POLICY_URL = import.meta.env.VITE_POLICY_URL || "/listing-policy.md";
+const POLICY_URL = import.meta.env.VITE_POLICY_URL || `${import.meta.env.BASE_URL}listing-policy.md`;
 
 export function PolicyPage() {
   const [content, setContent] = useState<string | null>(null);
