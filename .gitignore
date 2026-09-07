@@ -39,3 +39,6 @@ Thumbs.db
 .idea/
 *.swp
 *.swo
+
+# The site's production configuration is public data: the registry address, the chain, a public RPC.
+!frontend/.env.production
