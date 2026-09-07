@@ -13,12 +13,12 @@
     ]
   },
   "category": "Curated Lists",
-  "fileURI": "/ipfs/TODO_LISTING_POLICY_CID/listing-policy.pdf",
-  "evidenceDisplayInterfaceURI": "/ipfs/TODO_EVIDENCE_DISPLAY_CID/index.html",
+  "fileURI": "/ipfs/bafybeiejdchwmf7wqiw3s3t6ubedgcolrcwv3malu45wlwc3twg7ucqcie/listing-policy.pdf",
+  "evidenceDisplayInterfaceURI": "/ipfs/bafybeihbs35rkglz4kfaivcomd54ntnd4ec24cnlcspxhbol32jxg3eql4/index.html",
   "metadata": {
     "tcrTitle": "Agent Skills Registry",
     "tcrDescription": "An optimistic Kleros-curated registry of AI agent skills in the Agent Skills format.",
-    "logoURI": "/ipfs/TODO_LOGO_CID/agent-skills-registry-logo.svg",
+    "logoURI": "/ipfs/bafybeidin5z2vh6i7at2xufs3574sxzyhc7ibzslmzwj7ubthuzazwjvge/agent-skills-registry-logo.svg",
     "columns": [
       {
         "label": "Name",
