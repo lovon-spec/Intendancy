@@ -31,6 +31,21 @@ boolean):
   directories and multi-level File trees stay outside the profile (impossible
   under the 2 MiB policy cap with default chunking) and fail closed.
 
+## Releases
+
+Releases are cut from SSH-signed `v*` tags by `.github/workflows/release.yml`. Every asset is PGP-signed with the same key that signs Intendant's releases; its public half is committed at the repository root as `RELEASE-SIGNING-KEY.asc` and is uploaded beside the assets, and the workflow verifies each signature against that committed key before publishing.
+
+Assets: `intend-<version>-<target>.tar.gz` for linux-x86_64, linux-aarch64, macos-aarch64 and macos-x86_64 (the binary plus this README), `agent-skills-registry.toml` (the production profile), `SHA256SUMS`, and one detached `.asc` signature per file.
+
+Verify before use, the profile above all: it is the deployment manifest the CLI trusts.
+
+```bash
+gpg --import RELEASE-SIGNING-KEY.asc
+gpg --verify SHA256SUMS.asc SHA256SUMS
+sha256sum -c --ignore-missing SHA256SUMS
+gpg --verify agent-skills-registry.toml.asc agent-skills-registry.toml
+```
+
 ## The production profile
 
 `profiles/agent-skills-registry.toml` is the deployment manifest for the Agent Skills Registry on Gnosis (registry `0x67DBE6A9597635074546e08B92eE617bF02168f9`, governor the timelock `0xc8Ba4c0AD3554EDB0a9A4C8D73Bf87410A313ADa`, court 19 with three jurors, the two MetaEvidence references the deployment emitted). It ships as a release asset and is verified before use. First verified against the live chain on 2026-09-07: header quorum from two operators, complete enumeration proven, an empty catalog.

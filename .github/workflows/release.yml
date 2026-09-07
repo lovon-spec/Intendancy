@@ -1,0 +1,321 @@
+# Builds the `intend` CLI for four targets, PGP-signs every release asset with
+# the same key Intendant's releases use, self-verifies each signature against
+# the public key committed in this repository, and publishes the GitHub
+# release. Triggers are version tags (v*) and manual dispatch; a dispatch run is
+# a dry run that publishes nothing and only uploads an unsigned workflow
+# artifact.
+#
+# Signing secrets (repo Settings → Secrets and variables → Actions):
+#   PGP_SIGN_KEY_B64         base64 of the ASCII-armored SECRET SIGNING SUBKEY
+#                            export (gpg --export-secret-subkeys), never the
+#                            primary key
+#   PGP_SIGN_KEY_PASSPHRASE  the passphrase protecting that export
+# The public half is committed at the repo root as RELEASE-SIGNING-KEY.asc
+# (byte-identical to Intendant's). The sign step verifies every signature in a
+# keyring that holds ONLY the committed key, so a CI key that is not the
+# committed key's signing subkey fails the run before anything publishes. A
+# tag run without both secrets fails at the gate.
+#
+# Tags are SSH-signed by the owner locally (`git tag -s`); this workflow does
+# not verify tag signatures. It checks that the tag names the commit being
+# built, and consumers verify releases through the PGP signatures below.
+#
+# Not here, by design: a macOS app bundle, notarization, Windows, and the
+# transparency-log submission Intendant's pipeline adds (a possible follow-up).
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write # gh release create / upload
+
+# One release build at a time per ref; never cancel a half-published release.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # Native builds on GitHub-hosted runners: an ephemeral image with a known
+  # library baseline per target, no cross toolchain. `--locked` holds the
+  # build to cli/Cargo.lock.
+  binaries:
+    name: binaries (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-24.04
+            suffix: linux-x86_64
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+            suffix: linux-aarch64
+          - target: aarch64-apple-darwin
+            runner: macos-15
+            suffix: macos-aarch64
+          - target: x86_64-apple-darwin
+            # GitHub's Intel macOS image; macos-13 was retired in December 2025.
+            runner: macos-15-intel
+            suffix: macos-x86_64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: cli
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          # Full history so dispatch dry-runs can stamp a `git describe`
+          # dev version into the archive name.
+          fetch-depth: 0
+
+      - name: Toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+          rustup target add ${{ matrix.target }}
+          cargo --version
+
+      - name: Build
+        run: cargo build --release --locked --bin intend --target ${{ matrix.target }}
+
+      # One archive per target: `intend-<version>-<suffix>.tar.gz` carrying the
+      # binary and the CLI README, executable bit preserved. The version is the
+      # tag minus its "v", or a `git describe` dev stamp on tagless dispatch.
+      - name: Stage
+        run: |
+          set -euo pipefail
+          version="$GITHUB_REF_NAME"
+          if [ "$GITHUB_REF_TYPE" != "tag" ]; then
+            version="$(git describe --tags --match 'v*' --always --dirty 2>/dev/null || true)"
+          fi
+          [ -n "$version" ] || version="0.0.0-dev"
+          version="${version#v}"
+          case "$version" in
+            *.*) : ;;
+            *) version="0.0.0-${version}" ;;
+          esac
+          name="intend-${version}-${{ matrix.suffix }}"
+          rm -rf out stage && mkdir -p out stage
+          cp "target/${{ matrix.target }}/release/intend" stage/intend
+          chmod 755 stage/intend
+          cp README.md stage/README.md
+          tar -C stage -czf "out/${name}.tar.gz" intend README.md
+          rm -rf stage
+          ls -l out
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ matrix.suffix }}
+          path: cli/out/*
+          if-no-files-found: error
+
+  release:
+    needs: binaries
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      # The tag must name the commit being built. Tag SIGNATURES are not
+      # checked here: the owner signs tags with an SSH key and verifies them
+      # locally; consumers rely on the PGP-signed assets.
+      - name: Release identity gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            tagged="$(git rev-parse "refs/tags/$GITHUB_REF_NAME^{commit}")"
+            if [ "$tagged" != "$GITHUB_SHA" ]; then
+              echo "::error::tag $GITHUB_REF_NAME names $tagged but this run builds $GITHUB_SHA"
+              exit 1
+            fi
+            echo "tag $GITHUB_REF_NAME -> $tagged (matches the checkout)"
+          else
+            echo "dispatch dry run on $GITHUB_SHA: nothing will be published"
+          fi
+
+      # Official tag releases fail closed on signing: both secrets or nothing
+      # is published. A dispatch dry run without them proceeds unsigned and
+      # only uploads a workflow artifact.
+      - name: Gate on signing secrets
+        id: gate
+        shell: bash
+        env:
+          PGP_KEY_B64: ${{ secrets.PGP_SIGN_KEY_B64 }}
+          PGP_PASSPHRASE: ${{ secrets.PGP_SIGN_KEY_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          pgp_set=0
+          [ -n "$PGP_KEY_B64" ] && pgp_set=$((pgp_set + 1))
+          [ -n "$PGP_PASSPHRASE" ] && pgp_set=$((pgp_set + 1))
+          if [ "$pgp_set" = "1" ]; then
+            echo "::error::Partial PGP config: set both PGP_SIGN_KEY_B64 and PGP_SIGN_KEY_PASSPHRASE, or neither."
+            exit 1
+          fi
+          pgp=false
+          [ "$pgp_set" = "2" ] && pgp=true
+          echo "pgp=$pgp" >> "$GITHUB_OUTPUT"
+          if [ "$GITHUB_REF_TYPE" = "tag" ] && [ "$pgp" != "true" ]; then
+            echo "::error::Tag releases must be PGP-signed: add PGP_SIGN_KEY_B64 and PGP_SIGN_KEY_PASSPHRASE to this repository (the same signing subkey as Intendant's releases), or dry-run via workflow_dispatch."
+            exit 1
+          fi
+          if [ "$pgp" = "false" ]; then
+            echo "::warning::No PGP signing secrets configured: this dry run produces unsigned artifacts and publishes nothing."
+          fi
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: dist
+          merge-multiple: true
+
+      # The production profile ships as an asset under a fixed name, and every
+      # asset is listed in SHA256SUMS before anything is signed.
+      - name: Add the profile and the checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp cli/profiles/agent-skills-registry.toml dist/agent-skills-registry.toml
+          (cd dist && sha256sum -- * > SHA256SUMS)
+          cat dist/SHA256SUMS
+
+      - name: Import PGP release signing key (throwaway GNUPGHOME)
+        if: steps.gate.outputs.pgp == 'true'
+        shell: bash
+        env:
+          PGP_KEY_B64: ${{ secrets.PGP_SIGN_KEY_B64 }}
+          PGP_PASSPHRASE: ${{ secrets.PGP_SIGN_KEY_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          umask 077
+          command -v gpg > /dev/null || { echo "::error::gnupg is not installed on this runner"; exit 1; }
+          PGP_HOME="$RUNNER_TEMP/pgp-home"
+          rm -rf "$PGP_HOME"
+          mkdir -p "$PGP_HOME"
+          chmod 700 "$PGP_HOME"
+          echo "allow-loopback-pinentry" > "$PGP_HOME/gpg-agent.conf"
+          printf '%s' "$PGP_KEY_B64" | base64 -d > "$RUNNER_TEMP/pgp-key.asc"
+          gpg --batch --homedir "$PGP_HOME" --import "$RUNNER_TEMP/pgp-key.asc"
+          rm -f "$RUNNER_TEMP/pgp-key.asc"
+          printf '%s' "$PGP_PASSPHRASE" > "$RUNNER_TEMP/pgp-passphrase"
+
+      # Detach-sign every asset (SHA256SUMS included), stage the committed
+      # public key beside them, then verify every signature in a clean keyring
+      # that trusts ONLY the committed key: a configured key that is not the
+      # committed key's signing subkey fails here, before publishing.
+      - name: PGP-sign and self-verify
+        if: steps.gate.outputs.pgp == 'true'
+        id: pgp_sign
+        shell: bash
+        run: |
+          set -euo pipefail
+          PGP_HOME="$RUNNER_TEMP/pgp-home"
+          PASSPHRASE_FILE="$RUNNER_TEMP/pgp-passphrase"
+          KEY_FILE="$GITHUB_WORKSPACE/RELEASE-SIGNING-KEY.asc"
+          [ -f "$KEY_FILE" ] || { echo "::error::RELEASE-SIGNING-KEY.asc is missing from the repository"; exit 1; }
+          shopt -s nullglob
+          artifacts=()
+          for file in dist/*; do
+            [ -f "$file" ] || continue
+            case "$file" in *.asc) continue ;; esac
+            artifacts+=("$file")
+          done
+          [ "${#artifacts[@]}" -gt 0 ] || { echo "::error::no artifacts to sign in dist/"; exit 1; }
+          for file in "${artifacts[@]}"; do
+            rm -f "$file.asc"
+            gpg --batch --homedir "$PGP_HOME" --pinentry-mode loopback \
+              --passphrase-file "$PASSPHRASE_FILE" \
+              --armor --detach-sign --output "$file.asc" "$file"
+          done
+          cp "$KEY_FILE" dist/RELEASE-SIGNING-KEY.asc
+          VERIFY_HOME="$(mktemp -d)"
+          chmod 700 "$VERIFY_HOME"
+          gpg --batch --homedir "$VERIFY_HOME" --import "$KEY_FILE" > /dev/null 2>&1 \
+            || { echo "::error::the committed RELEASE-SIGNING-KEY.asc does not import as a public key"; exit 1; }
+          for file in "${artifacts[@]}"; do
+            gpg --batch --homedir "$VERIFY_HOME" --verify "$file.asc" "$file" || {
+              echo "::error::$file.asc does not verify against the committed RELEASE-SIGNING-KEY.asc: the configured signing key is not the committed key's signing subkey"
+              exit 1
+            }
+          done
+          fingerprint="$(gpg --homedir "$VERIFY_HOME" --with-colons --list-keys 2> /dev/null | awk -F: '/^fpr/{print $10; exit}')"
+          gpgconf --homedir "$VERIFY_HOME" --kill gpg-agent 2> /dev/null || true
+          rm -rf "$VERIFY_HOME"
+          [ -n "$fingerprint" ] || { echo "::error::could not read the committed key's fingerprint"; exit 1; }
+          echo "fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"
+          echo "signed ${#artifacts[@]} asset(s) with key $fingerprint, self-verified against RELEASE-SIGNING-KEY.asc"
+          ls -l dist
+
+      # always(): the subkey never outlives the run, failed or not.
+      - name: Clean up PGP signing material
+        if: always()
+        shell: bash
+        run: |
+          if [ -d "$RUNNER_TEMP/pgp-home" ]; then
+            gpgconf --homedir "$RUNNER_TEMP/pgp-home" --kill gpg-agent 2>/dev/null || true
+            find "$RUNNER_TEMP/pgp-home" -type f -exec shred -u {} + 2>/dev/null || true
+            rm -rf "$RUNNER_TEMP/pgp-home"
+          fi
+          for f in "$RUNNER_TEMP/pgp-key.asc" "$RUNNER_TEMP/pgp-passphrase"; do
+            [ -f "$f" ] && { shred -u "$f" 2>/dev/null || rm -f "$f"; }
+          done
+          true
+
+      - name: Publish GitHub release
+        if: github.ref_type == 'tag'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PGP_FINGERPRINT: ${{ steps.pgp_sign.outputs.fingerprint }}
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          version="${tag#v}"
+          prerelease=()
+          case "$tag" in *-*) prerelease=(--prerelease) ;; esac
+          {
+            echo "## intend $version"
+            echo
+            echo "The \`intend\` CLI for the **Agent Skills Registry** on Gnosis Chain (chain ID 100): registry \`0x67DBE6A9597635074546e08B92eE617bF02168f9\`, governor the timelock \`0xc8Ba4c0AD3554EDB0a9A4C8D73Bf87410A313ADa\`. The profile that pins them ships as \`agent-skills-registry.toml\`."
+            echo
+            echo "**Assets.** One \`intend-${version}-<target>.tar.gz\` per target (linux-x86_64, linux-aarch64, macos-aarch64, macos-x86_64), \`agent-skills-registry.toml\`, \`SHA256SUMS\`, and a detached \`.asc\` PGP signature for each of them. The public key is \`RELEASE-SIGNING-KEY.asc\`, the same key that signs Intendant's releases (fingerprint \`$PGP_FINGERPRINT\`); it is also committed at the root of this repository."
+            echo
+            echo "**Verify before use.**"
+            echo '```'
+            echo "gpg --import RELEASE-SIGNING-KEY.asc"
+            echo "gpg --verify SHA256SUMS.asc SHA256SUMS"
+            echo "sha256sum -c --ignore-missing SHA256SUMS"
+            echo "gpg --verify agent-skills-registry.toml.asc agent-skills-registry.toml"
+            echo '```'
+            echo
+            echo "Then: \`intend --profile agent-skills-registry.toml update\` anchors on a header quorum, proves the complete catalog and fails closed on anything the profile does not pin."
+            echo
+            echo '```'
+            cat dist/SHA256SUMS
+            echo '```'
+          } > "$RUNNER_TEMP/release-notes.md"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release upload "$tag" dist/* --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$tag" dist/* \
+              --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              "${prerelease[@]}" \
+              --title "intend $tag" \
+              --notes-file "$RUNNER_TEMP/release-notes.md"
+          fi
+
+      - name: Upload workflow artifact (dry run, no tag)
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: intend-dry-run-unsigned
+          path: dist/*
+          if-no-files-found: error
