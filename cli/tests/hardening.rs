@@ -296,6 +296,60 @@ async fn capped_rpc_transport_rejects_oversized_responses() {
     assert!(format!("{err}").contains("cap"), "{err}");
 }
 
+/// Server that answers the first `fail_first` requests with a transient
+/// status and every later one with `body`.
+fn serve_rpc_flaky(status_line: &'static str, fail_first: usize, body: Vec<u8>) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        let mut seen = 0usize;
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { break };
+            let mut buf = [0u8; 8192];
+            let _ = stream.read(&mut buf);
+            seen += 1;
+            if seen <= fail_first {
+                let _ = stream.write_all(
+                    format!("HTTP/1.1 {status_line}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n").as_bytes(),
+                );
+                continue;
+            }
+            let _ = stream.write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                    body.len()
+                )
+                .as_bytes(),
+            );
+            let _ = stream.write_all(&body);
+        }
+    });
+    format!("http://{addr}/")
+}
+
+#[tokio::test]
+async fn capped_rpc_transport_retries_transient_statuses_but_not_final_ones() {
+    use alloy::providers::Provider;
+    let ok = b"{\"jsonrpc\":\"2.0\",\"id\":0,\"result\":\"0x10\"}".to_vec();
+
+    // One 408 then success: the read is idempotent, so the retry answers.
+    let url = serve_rpc_flaky("408 Request Timeout", 1, ok.clone());
+    let provider = intend::transport::capped_provider_with_cap(&url, 64 * 1024).unwrap();
+    assert_eq!(provider.get_block_number().await.unwrap(), 16);
+
+    // Transient on every attempt: the bounded retry gives up with the status.
+    let url = serve_rpc_flaky("503 Service Unavailable", usize::MAX, ok.clone());
+    let provider = intend::transport::capped_provider_with_cap(&url, 64 * 1024).unwrap();
+    let err = provider.get_block_number().await.unwrap_err();
+    assert!(format!("{err}").contains("HTTP 503"), "{err}");
+
+    // A non-transient status is final on the first answer.
+    let url = serve_rpc_flaky("404 Not Found", 1, ok);
+    let provider = intend::transport::capped_provider_with_cap(&url, 64 * 1024).unwrap();
+    let err = provider.get_block_number().await.unwrap_err();
+    assert!(format!("{err}").contains("HTTP 404"), "{err}");
+}
+
 #[test]
 fn pending_journal_entries_audit_as_incomplete_until_enabled() {
     let tmp = tempfile::tempdir().unwrap();

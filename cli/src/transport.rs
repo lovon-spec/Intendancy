@@ -29,29 +29,62 @@ pub struct CappedHttp {
     cap: u64,
 }
 
+/// Attempts made for one JSON-RPC request before its transient failure is
+/// reported. Every request this crate makes is an idempotent read (chain id,
+/// headers, proofs, `eth_call`), so a retry can never double an effect; public
+/// endpoints answer 408/429/5xx or drop a connection often enough (dRPC,
+/// observed 2026-09-07) that one such answer must not fail a whole run.
+pub const RPC_ATTEMPTS: u32 = 3;
+
+fn transient_status(status: reqwest::StatusCode) -> bool {
+    matches!(status.as_u16(), 408 | 425 | 429 | 500 | 502 | 503 | 504)
+}
+
 fn rpc_blocking(url: reqwest::Url, cap: u64, body: Vec<u8>) -> Result<Vec<u8>, TransportError> {
+    let mut attempt = 1;
+    loop {
+        match rpc_blocking_once(&url, cap, &body) {
+            Ok(buf) => return Ok(buf),
+            Err((true, e)) if attempt < RPC_ATTEMPTS => {
+                std::thread::sleep(std::time::Duration::from_millis(250 * u64::from(attempt)));
+                attempt += 1;
+                let _ = e;
+            }
+            Err((_, e)) => return Err(e),
+        }
+    }
+}
+
+/// One attempt. The boolean says whether the failure is transient (worth a
+/// retry): a failed send or a transient status. Cap violations and non-transient
+/// statuses are final.
+fn rpc_blocking_once(url: &reqwest::Url, cap: u64, body: &[u8]) -> Result<Vec<u8>, (bool, TransportError)> {
     let client = crate::fetch::http_client()
-        .map_err(|e| TransportErrorKind::custom_str(&format!("{e:#}")))?;
+        .map_err(|e| (false, TransportErrorKind::custom_str(&format!("{e:#}"))))?;
     let resp = client
         .post(url.clone())
         .timeout(std::time::Duration::from_secs(
             crate::anchor::RPC_DEADLINE_SECS,
         ))
         .header(reqwest::header::CONTENT_TYPE, "application/json")
-        .body(body)
+        .body(body.to_vec())
         .send()
-        .map_err(TransportErrorKind::custom)?;
+        .map_err(|e| (true, TransportErrorKind::custom(e)))?;
     let status = resp.status();
     if !status.is_success() {
-        return Err(TransportErrorKind::custom_str(&format!(
-            "HTTP {status} from {url}"
-        )));
+        return Err((
+            transient_status(status),
+            TransportErrorKind::custom_str(&format!("HTTP {status} from {url}")),
+        ));
     }
     if let Some(len) = resp.content_length() {
         if len > cap {
-            return Err(TransportErrorKind::custom_str(&format!(
-                "RPC response advertises {len} bytes, over the {cap}-byte cap"
-            )));
+            return Err((
+                false,
+                TransportErrorKind::custom_str(&format!(
+                    "RPC response advertises {len} bytes, over the {cap}-byte cap"
+                )),
+            ));
         }
     }
     // Take-bounded read: at most cap + 1 bytes are ever consumed (saturating).
@@ -59,11 +92,12 @@ fn rpc_blocking(url: reqwest::Url, cap: u64, body: Vec<u8>) -> Result<Vec<u8>, T
     let mut buf = Vec::new();
     resp.take(cap.saturating_add(1))
         .read_to_end(&mut buf)
-        .map_err(|e| TransportErrorKind::custom_str(&format!("reading RPC response: {e}")))?;
+        .map_err(|e| (true, TransportErrorKind::custom_str(&format!("reading RPC response: {e}"))))?;
     if buf.len() as u64 > cap {
-        return Err(TransportErrorKind::custom_str(&format!(
-            "RPC response exceeds the {cap}-byte cap"
-        )));
+        return Err((
+            false,
+            TransportErrorKind::custom_str(&format!("RPC response exceeds the {cap}-byte cap")),
+        ));
     }
     Ok(buf)
 }

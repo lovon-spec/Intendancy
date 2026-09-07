@@ -84,6 +84,9 @@ Pinned as of 2026-09-07 and verified from `dweb.link`, `ipfs.io`, `trustless-gat
 |---|---|---|---|
 | Evidence display bundle | `bafybeihbs35rkglz4kfaivcomd54ntnd4ec24cnlcspxhbol32jxg3eql4` | 11 blocks, 843,645 bytes | pinned; the production bundle |
 | Registry logo, wrapped (wordmark, `tools/logo/build-logo.py`) | `bafybeidin5z2vh6i7at2xufs3574sxzyhc7ibzslmzwj7ubthuzazwjvge` | 2 blocks, 10654 bytes | pinned 2026-09-07; the production logo, served by the Kleros CDN |
+| Listing policy 2.2 PDF, wrapped (`meta-evidence/listing-policy-2.2.pdf`) | `bafybeiejdchwmf7wqiw3s3t6ubedgcolrcwv3malu45wlwc3twg7ucqcie` | 2 blocks, 164394 bytes | pinned 2026-09-07; the production policy, served by the Kleros CDN |
+| Registration MetaEvidence, wrapped | `bafybeifcbrqdv7nh6d2smr33knp2kcncxaq44rxbwogtp57vnpm6f7ikfq` | pinned 2026-09-07 | `REG_META_EVIDENCE=/ipfs/bafybeifcbrqdv7nh6d2smr33knp2kcncxaq44rxbwogtp57vnpm6f7ikfq/registration-meta-evidence.json` |
+| Clearing MetaEvidence, wrapped | `bafybeihnkauoj3okjd5lmgsbow6hrigxvf5yw6dfvmgzpcnwe4x5jjfk3u` | pinned 2026-09-07 | `CLEAR_META_EVIDENCE=/ipfs/bafybeihnkauoj3okjd5lmgsbow6hrigxvf5yw6dfvmgzpcnwe4x5jjfk3u/clearing-meta-evidence.json` |
 | Former tile logo, wrapped | `bafybeicjara72feyuvhuj7ej76ra5kkblpixn7rskabhcsxy5ezyadhxu4` | 2 blocks, 658 bytes | pinned; used only by the TEST list's meta-evidence |
 | Policy PDF, TEST copy | `bafybeifcum2rnx6ro2mqqqxqzijbm2juxxm5faoe54bnjxbxsf4mpll7ba` | 2 blocks, 174,225 bytes | pinned; the PR #16 policy with the timelock address filled and a TEST banner on top, for the test list only |
 | MetaEvidence, TEST copies | registration `bafybeih3jgo6rruhs73u6xhxlq455qmvhmpb3v6lysmptnwrkbtofn2w4m`, clearing `bafybeie3xoh2rbyhbszyqa7djg6dnx4cyhhpvogzgowo6spk24jxpagd64` | | pinned; TEST-labelled, for the test list only |

@@ -40,5 +40,8 @@ Thumbs.db
 *.swp
 *.swo
 
+# The site's production configuration is public data: the registry address, the chain, a public RPC.
+!frontend/.env.production
+
 # Rust build output (cli/, spikes/*): never tracked
 target/
