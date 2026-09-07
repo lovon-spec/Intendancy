@@ -73,3 +73,7 @@ cmp docs/listing-policy.md frontend/public/listing-policy.md
 ```
 
 See [`docs/DESIGN.md`](docs/DESIGN.md) for the product architecture and [`docs/BRAND.md`](docs/BRAND.md) for naming conventions.
+
+## License
+
+MIT. See `LICENSE`.
