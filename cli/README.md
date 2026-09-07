@@ -46,6 +46,10 @@ sha256sum -c --ignore-missing SHA256SUMS
 gpg --verify agent-skills-registry.toml.asc agent-skills-registry.toml
 ```
 
+## Bootstrapping an agent
+
+`skills/intendancy/` at the repository root is a skill that teaches an agent to use the registry: `scripts/install-intend.sh` installs the CLI and the profile from a signed release with every artifact verified against the pinned release key, and `SKILL.md` covers update, catalog, install and audit, including how to read the anchor mode. An agent gets its first copy from this repository; once the skill is listed in the registry, updates arrive through the same verified path as every other skill.
+
 ## The production profile
 
 `profiles/agent-skills-registry.toml` is the deployment manifest for the Agent Skills Registry on Gnosis (registry `0x67DBE6A9597635074546e08B92eE617bF02168f9`, governor the timelock `0xc8Ba4c0AD3554EDB0a9A4C8D73Bf87410A313ADa`, court 19 with three jurors, the two MetaEvidence references the deployment emitted). It ships as a release asset and is verified before use. First verified against the live chain on 2026-09-07: header quorum from two operators, complete enumeration proven, an empty catalog.
