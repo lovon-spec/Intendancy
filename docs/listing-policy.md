@@ -117,7 +117,7 @@ Consumers MUST treat every `ClearingRequested` item uniformly, regardless of who
 
 ## Amendments
 
-This policy may be amended by the registry's governor. An amendment is queued on chain and takes effect no earlier than seven days after it is queued. A request is judged under the policy version in force when it was submitted; an amendment never alters an entry already registered or a dispute already open.
+This policy can change only through the registry's governor, a timelock contract that queues every change on chain seven days before it takes effect. Each request keeps the policy version it was submitted under.
 
 ## Evidence Guidelines
 
