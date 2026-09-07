@@ -10,7 +10,7 @@ export function Header() {
             to="/"
             className="flex items-center gap-2 text-lg font-bold text-gray-900 hover:text-gray-700"
           >
-            <img src="/favicon.svg" alt="" aria-hidden="true" className="h-7 w-7" />
+            <img src={`${import.meta.env.BASE_URL}favicon.svg`} alt="" aria-hidden="true" className="h-7 w-7" />
             <span>Intendancy</span>
           </Link>
           <nav className="flex items-center gap-4">
