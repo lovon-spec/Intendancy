@@ -32,7 +32,7 @@ The product is a **registry**, **catalog**, **governed capability domain**, or *
 
 ## The registry is unbranded
 
-Owner decision, 2026-09-04. The on-chain registry is deployed as the **Agent Skills Registry**: its MetaEvidence titles, list title, logo, listing policy and juror evidence display carry no Intendancy branding, so that it reads as shared infrastructure in Kleros's list of lists and any runtime or submitter can build on it. Intendancy brands only the consumer side. When describing where governance is headed, say "the registry's community"; do not name any single organization as its future steward.
+Owner decision, 2026-09-04. The on-chain registry is deployed as the **Agent Skills Registry**: its MetaEvidence titles, list title, logo, listing policy and juror evidence display carry no Intendancy branding, so that it reads as shared infrastructure in Kleros's list of lists and any runtime or submitter can build on it. Intendancy brands only the consumer side. The registry's logo (`meta-evidence/agent-skills-registry-logo.svg`) is therefore the name itself: the words "Agent Skills" stacked on a white plate, "Agent" in near-black and "Skills" in teal, set in Inter (SIL Open Font License 1.1) and outlined to paths by `tools/logo/build-logo.py`, so that it carries no mark that a later, closer integration with Intendancy, Intendment or Intendant would have to explain away. The teal sits apart from the Kleros purple and from the Intendancy green. When describing where governance is headed, say "the registry's community"; do not name any single organization as its future steward.
 
 ## Naming rationale
 
@@ -56,7 +56,7 @@ Intendancy is a visual sibling of Intendant, not a recolored clone. The two mark
 
 The distinction carries the product boundary. **Intendant** crosses the I with a conductor’s baton and fans outward to orchestrated agents. **Intendancy** crosses the same I with horizontal registry-ledger rows terminating in verified-status nodes. One runs the house; the other represents its governed capability domain.
 
-`assets/intendancy-mark.svg` is the canonical master. `frontend/public/favicon.svg` and `meta-evidence/intendancy-logo.svg` must remain byte-identical copies until a build step replaces that duplication. The brand check enforces this invariant.
+`assets/intendancy-mark.svg` is the canonical master. `frontend/public/favicon.svg` must remain a byte-identical copy until a build step replaces that duplication; the on-chain registry's logo is the separate, unbranded wordmark described above. The brand check enforces this invariant.
 
 ## Technical naming rules
 
