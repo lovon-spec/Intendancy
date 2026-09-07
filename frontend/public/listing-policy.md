@@ -1,10 +1,7 @@
 # Agent Skills Registry — Listing Policy
 
-**Version**: 2.2 (draft; pre-launch amendments by owner decision — 2026-08-24: symlinks prohibited in trees, executable bits non-semantic; 2026-09-05: CIDv1 required for every linked CID, Agent Skills specification pinned; 2026-09-06: the policy is mutable behind a seven-day timelock; 2026-09-06: the Runtimes column has a fixed grammar)
-**Registry**: Agent Skills Registry (Classic GeneralizedTCR)
-**Governor**: the timelock `0xc8Ba4c0AD3554EDB0a9A4C8D73Bf87410A313ADa`, whose proposer is the Safe `0x55705C596E087866C2B8e9339D7016b35a32619F`
+**Version**: 2.2
 **Chain**: Gnosis Chain (chain ID 100)
-**Registry address**: `[TO BE SET AT DEPLOYMENT]`
 
 ## Purpose
 
@@ -118,9 +115,9 @@ Post-listing unavailability, by itself, is **not** a removal ground: criterion 1
 
 Consumers MUST treat every `ClearingRequested` item uniformly, regardless of who requested removal. New installation and automatic loading or execution SHOULD be suspended by default while the request is pending. A consumer MAY permit an explicit local override and SHOULD retain existing bytes and lockfile history for inspection. No requester address has special protocol or trust semantics.
 
-## Governance
+## Amendments
 
-The registry is neutral infrastructure and carries no product branding. Its governor is the timelock at `0xc8Ba4c0AD3554EDB0a9A4C8D73Bf87410A313ADa`; the Safe at `0x55705C596E087866C2B8e9339D7016b35a32619F` proposes and may cancel, anyone may execute a matured operation, and the timelock administers itself. Every governor action, a change to deposits, the challenge period, the appeal stake multipliers, the arbitrator and its extra data, this policy and its MetaEvidence, or the governor itself, is queued publicly and takes effect no earlier than seven days after it is queued. A policy change applies only to requests submitted after it takes effect: every request keeps the policy version it was submitted under, for jurors and for verifiers alike, and a change never alters an entry already registered or a dispute already open. Verifiers pin the policy versions they accept and refuse entries registered under any other version until a new signed profile release names it. The governor does not adjudicate; challenged entries are decided by Kleros jurors under the policy version their request was submitted under. The intended direction is to widen governance to the registry's community as adoption grows.
+This policy may be amended by the registry's governor. An amendment is queued on chain and takes effect no earlier than seven days after it is queued. A request is judged under the policy version in force when it was submitted; an amendment never alters an entry already registered or a dispute already open.
 
 ## Evidence Guidelines
 
