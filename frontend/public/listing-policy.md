@@ -1,8 +1,8 @@
 # Agent Skills Registry — Listing Policy
 
-**Version**: 2.2 (draft; pre-launch amendments by owner decision — 2026-08-24: symlinks prohibited in trees, executable bits non-semantic; 2026-09-05: CIDv1 required for every linked CID, Agent Skills specification pinned; 2026-09-06: the policy is mutable behind a seven-day timelock)
+**Version**: 2.2 (draft; pre-launch amendments by owner decision — 2026-08-24: symlinks prohibited in trees, executable bits non-semantic; 2026-09-05: CIDv1 required for every linked CID, Agent Skills specification pinned; 2026-09-06: the policy is mutable behind a seven-day timelock; 2026-09-06: the Runtimes column has a fixed grammar)
 **Registry**: Agent Skills Registry (Classic GeneralizedTCR)
-**Governor**: the timelock `[TIMELOCK_ADDRESS]`, whose proposer is the Safe `[GOVERNOR_ADDRESS]`
+**Governor**: the timelock `[TIMELOCK_ADDRESS]`, whose proposer is the Safe `0x55705C596E087866C2B8e9339D7016b35a32619F`
 **Chain**: Gnosis Chain (chain ID 100)
 **Registry address**: `[TO BE SET AT DEPLOYMENT]`
 
@@ -32,7 +32,7 @@ Each submission consists of exactly these columns, in order:
 | 1 | **Name** | Yes | Must be **byte-identical** to the `name` field of the SKILL.md frontmatter in the skill tree. |
 | 2 | **Description** | Yes | Must be **byte-identical** to the `description` field of the SKILL.md frontmatter (≤1024 characters per the Agent Skills specification). |
 | 3 | **Tree CID** | Yes | The skill tree's IPFS CID in **canonical form**: CIDv1, base32, lowercase, DAG-PB codec, and a 32-byte SHA-256 multihash, referring to a UnixFS directory. Bare CID only — no `/ipfs/` prefix, no path suffix, no gateway URL. **IPNS names, DNSLink, and any mutable or resolvable-indirection reference are prohibited.** |
-| 4 | **Runtimes** | Yes | Comma-separated list of supported agent runtimes. Use `generic` if the skill follows the Agent Skills specification without runtime-specific metadata or features; list specific runtimes (e.g., `claude_code`) if it relies on such metadata or features. |
+| 4 | **Runtimes** | Yes | Supported agent runtimes as a list of identifiers: each identifier is lowercase snake case, a letter followed by letters, digits or underscores, at most 32 characters; identifiers are separated by single commas with no whitespace, are unique, are in ascending byte order, and number at most 16. The identifier `generic` is reserved: use it, alone, if the skill follows the Agent Skills specification without runtime-specific metadata or features; otherwise list the specific runtimes (e.g., `claude_code,cursor`) and do not include `generic`. A column that does not match this form fails criterion 1. |
 | 5 | **Origin** | No | A provenance claim: either a public git repository URL followed by `@` and a full 40-character commit SHA-1, or a publisher URL (e.g., `https://skills.example.org`). If present, it must satisfy acceptance criterion 6. Leave empty if unused. |
 | 6 | **Reserved** | Yes | MUST be the empty string. It has no semantics in this policy version; assigning any future meaning requires a versioned policy revision. |
 
@@ -120,7 +120,7 @@ Consumers MUST treat every `ClearingRequested` item uniformly, regardless of who
 
 ## Governance
 
-The registry is neutral infrastructure and carries no product branding. Its governor is the timelock at `[TIMELOCK_ADDRESS]`; the Safe at `[GOVERNOR_ADDRESS]` proposes and may cancel, anyone may execute a matured operation, and the timelock administers itself. Every governor action, a change to deposits, the challenge period, the appeal stake multipliers, the arbitrator and its extra data, this policy and its MetaEvidence, or the governor itself, is queued publicly and takes effect no earlier than seven days after it is queued. A policy change applies only to requests submitted after it takes effect: every request keeps the policy version it was submitted under, for jurors and for verifiers alike, and a change never alters an entry already registered or a dispute already open. Verifiers pin the policy versions they accept and refuse entries registered under any other version until a new signed profile release names it. The governor does not adjudicate; challenged entries are decided by Kleros jurors under the policy version their request was submitted under. The intended direction is to widen governance to the registry's community as adoption grows.
+The registry is neutral infrastructure and carries no product branding. Its governor is the timelock at `[TIMELOCK_ADDRESS]`; the Safe at `0x55705C596E087866C2B8e9339D7016b35a32619F` proposes and may cancel, anyone may execute a matured operation, and the timelock administers itself. Every governor action, a change to deposits, the challenge period, the appeal stake multipliers, the arbitrator and its extra data, this policy and its MetaEvidence, or the governor itself, is queued publicly and takes effect no earlier than seven days after it is queued. A policy change applies only to requests submitted after it takes effect: every request keeps the policy version it was submitted under, for jurors and for verifiers alike, and a change never alters an entry already registered or a dispute already open. Verifiers pin the policy versions they accept and refuse entries registered under any other version until a new signed profile release names it. The governor does not adjudicate; challenged entries are decided by Kleros jurors under the policy version their request was submitted under. The intended direction is to widen governance to the registry's community as adoption grows.
 
 ## Evidence Guidelines
 

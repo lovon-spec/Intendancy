@@ -3,7 +3,30 @@ import type { ItemFields } from "../types";
 const NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const BASE32_PATTERN = /^b[a-z2-7]+$/;
 const BASE32_ALPHABET = "abcdefghijklmnopqrstuvwxyz234567";
-const RUNTIMES_PATTERN = /^[a-z0-9][a-z0-9_-]*(?:,[a-z0-9][a-z0-9_-]*)*$/;
+const RUNTIME_IDENTIFIER = /^[a-z][a-z0-9_]{0,31}$/;
+export const MAX_RUNTIMES = 16;
+
+/** Listing policy column 4: lowercase snake_case identifiers, single commas, unique, ascending, at most 16, `generic` only alone. */
+export function runtimesValidationError(value: string): string | null {
+  if (value === "") return "Runtimes must list at least one identifier";
+  const parts = value.split(",");
+  if (parts.length > MAX_RUNTIMES) return `Runtimes lists ${parts.length} identifiers, at most ${MAX_RUNTIMES} allowed`;
+  for (let i = 0; i < parts.length; i += 1) {
+    if (!RUNTIME_IDENTIFIER.test(parts[i])) {
+      return `Runtimes identifier "${parts[i]}" is not lowercase snake case (a letter, then letters, digits or underscores, at most 32 characters)`;
+    }
+    if (i > 0 && parts[i - 1] >= parts[i]) {
+      return `Runtimes identifiers must be unique and in ascending order ("${parts[i - 1]}" before "${parts[i]}")`;
+    }
+  }
+  if (parts.length > 1 && parts.includes("generic")) return "Runtimes: generic must be the only identifier when present";
+  return null;
+}
+
+/** Canonical form of a set of runtime identifiers: sorted, deduplicated, joined with single commas. */
+export function canonicalRuntimes(identifiers: string[]): string {
+  return [...new Set(identifiers)].sort().join(",");
+}
 
 function decodeBase32(value: string): Uint8Array | null {
   let buffer = 0;
@@ -130,9 +153,8 @@ export function getItemValidationError(fields: ItemFields): string | null {
   if (!isCanonicalTreeCid(fields.treeCid)) {
     return "Tree CID must be a canonical bare lowercase CIDv1 base32 dag-pb CID with a 32-byte SHA-256 multihash (for example, bafy...); the root is checked as a UnixFS directory when fetched";
   }
-  if (!RUNTIMES_PATTERN.test(fields.runtimes)) {
-    return "Runtimes must be a comma-separated list of lowercase runtime identifiers without spaces";
-  }
+  const runtimesError = runtimesValidationError(fields.runtimes);
+  if (runtimesError) return runtimesError;
   if (!isValidOrigin(fields.origin)) {
     return "Origin must be empty, an HTTP(S) publisher URL, or a public git URL followed by @ and a full 40-character commit hash";
   }

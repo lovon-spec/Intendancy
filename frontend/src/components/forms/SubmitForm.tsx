@@ -3,7 +3,7 @@ import { useAccount } from "wagmi";
 import { SUGGESTED_RUNTIMES as RUNTIMES } from "../../config/registry";
 import { useRegistryParams } from "../../hooks/useRegistryParams";
 import { useSubmitItem } from "../../hooks/useSubmitItem";
-import { getItemValidationError } from "../../lib/schema";
+import { getItemValidationError, canonicalRuntimes } from "../../lib/schema";
 import { DepositInfo } from "./DepositInfo";
 import { TransactionStatus } from "../wallet/TransactionStatus";
 import type { ItemFields } from "../../types";
@@ -21,16 +21,19 @@ export function SubmitForm() {
   const [origin, setOrigin] = useState("");
   const [validationError, setValidationError] = useState("");
 
+  // The policy reserves `generic` for skills with no runtime-specific features, alone.
   function toggleRuntime(rt: string) {
-    setSelectedRuntimes((prev) =>
-      prev.includes(rt) ? prev.filter((r) => r !== rt) : [...prev, rt]
-    );
+    setSelectedRuntimes((prev) => {
+      if (prev.includes(rt)) return prev.filter((r) => r !== rt);
+      if (rt === "generic") return ["generic"];
+      return [...prev.filter((r) => r !== "generic"), rt];
+    });
   }
 
   function addCustomRuntime() {
-    const rt = customRuntime.trim().toLowerCase().replace(/\s+/g, "_");
-    if (rt && !selectedRuntimes.includes(rt)) {
-      setSelectedRuntimes((prev) => [...prev, rt]);
+    const rt = customRuntime.trim().toLowerCase().replace(/[\s-]+/g, "_").replace(/[^a-z0-9_]/g, "");
+    if (rt && rt !== "generic" && !selectedRuntimes.includes(rt)) {
+      setSelectedRuntimes((prev) => [...prev.filter((r) => r !== "generic"), rt]);
     }
     setCustomRuntime("");
   }
@@ -44,7 +47,7 @@ export function SubmitForm() {
       name,
       description,
       treeCid,
-      runtimes: selectedRuntimes.join(","),
+      runtimes: canonicalRuntimes(selectedRuntimes),
       origin,
       reserved: "",
     };
