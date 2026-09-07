@@ -91,6 +91,28 @@ pub async fn generate_snapshot(
     let gtcr = IGTCR::new(profile.registry, provider.clone());
     let mc = IMulticall3::new(MULTICALL3, provider.clone());
 
+    // A registry that has no code at the anchor cannot be enumerated, and the
+    // bare "returned no data" from the call below would hide the two likely
+    // causes: a finalized anchor that still predates the deployment (finality
+    // trails the head by minutes, and a lagging quorum source lowers the
+    // anchor further) or a wrong address in the profile.
+    let code = crate::anchor::with_deadline(&format!("{rpc_url} eth_getCode"), async {
+        provider
+            .get_code_at(profile.registry)
+            .block_id(at)
+            .await
+            .map_err(|e| eyre!("{e}"))
+    })
+    .await?;
+    if code.is_empty() {
+        bail!(
+            "the registry {} has no code at anchor block {}: either the finalized anchor \
+             predates the deployment (retry once finality passes it) or the profile pins \
+             the wrong address",
+            profile.registry,
+            anchor.block_number
+        );
+    }
     let count: U256 = crate::anchor::with_deadline(&format!("{rpc_url} itemCount"), async {
         gtcr.itemCount()
             .block(at)
