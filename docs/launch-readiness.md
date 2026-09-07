@@ -72,3 +72,18 @@ Not on the critical path: the binary framing spike, strict light-client mode, th
 For a last look at the registry as the official Curate interface shows it, a clearly labelled TEST list was deployed on Gnosis mainnet through the same Safe route as the timelock: Safe transaction nonce 1, safeTxHash `0xbff020ac8ece243fa94b27b1e2f3f539c9a651e4c865d59d45d3c04ab9f84b26`, mined in the same tx `0x68fd0f8a84bdc89930b64ce55c5cc1e318aa52aa8efaad1cd0e8c20a21a81b5b` at block 48119043. The list is at `0x2A25ec70329918d13Ec23477716a159D063735D0` and carries the production configuration (the real arbitrator, court 19 with three jurors, deposits 30/30/0/0 xDAI, multipliers 10000/10000/20000) with two deliberate differences: a 3600 s challenge period, so a test submission registers within the hour, and the test key `0xC05e109F24CbE59301272fe8e7a908F67A1af539` as governor, so the list can be disabled afterwards. Its MetaEvidence is TEST-labelled: registration `/ipfs/bafybeih3jgo6rruhs73u6xhxlq455qmvhmpb3v6lysmptnwrkbtofn2w4m/registration-meta-evidence.json`, clearing `/ipfs/bafybeie3xoh2rbyhbszyqa7djg6dnx4cyhhpvogzgowo6spk24jxpagd64/clearing-meta-evidence.json`; the list title reads "TEST: Agent Skills Registry (test deployment, not the registry)", both titles start with "[TEST]", the descriptions say not to submit, and the policy copy it links carries a test banner.
 
 This list is not the registry, must never appear in a CLI profile, and is disabled after the review: the governor raises the submission and removal deposits out of reach and then hands the governor role to a dead address. Two consequences for the launch: the factory address `0x2A25…35D0` that the fork dry run predicted was consumed by the test list, so the production registry gets the factory's next address (the mined `NewGTCR` log is authoritative either way); and the logo, the evidence display bundle and the five seed trees are already pinned and gateway-checked, so only the production policy PDF and the production MetaEvidence files remain to pin on deployment day.
+
+## 6. Deployed (2026-09-07)
+
+| | |
+|---|---|
+| Registry | `0x67DBE6A9597635074546e08B92eE617bF02168f9` on Gnosis Chain (chain ID 100) |
+| Deployment | Safe transaction nonce 2, safeTxHash `0x605dc6356e0e4e083aa3f4215d58f9c7e2ab7d2a44704ca15e0b7eb65304ee2a`, mined in tx `0x7cc3592a053a1a0420a71796c853b1a10e248faf2d0aca806d7d777b79f08a39` at block 48119952; the address is the one the factory's mined `NewGTCR` log names |
+| Runtime code hash | `0x5a6cf79325018f60d2aa63ca57c5396ae760b2ae57d4572c631778b3e9085d7d`, equal to the spec's frozen value |
+| Governor | the timelock `0xc8Ba4c0AD3554EDB0a9A4C8D73Bf87410A313ADa` |
+| Arbitrator, extra data | xKlerosLiquid `0x9C1dA9A04925bDfDedf0f6421bC7EEa8305F9002`, court 19, three jurors (arbitration cost 21.6 xDAI at deployment) |
+| Deposits, period, multipliers | 30 / 30 / 0 / 0 xDAI; 302400 s; 10000 / 10000 / 20000 bps, all read back from the contract |
+| MetaEvidence 0, 1 | `/ipfs/bafybeifcbrqdv7nh6d2smr33knp2kcncxaq44rxbwogtp57vnpm6f7ikfq/registration-meta-evidence.json`, `/ipfs/bafybeihnkauoj3okjd5lmgsbow6hrigxvf5yw6dfvmgzpcnwe4x5jjfk3u/clearing-meta-evidence.json`, as emitted at deployment |
+| Curate | https://curate.kleros.io/tcr/100/0x67DBE6A9597635074546e08B92eE617bF02168f9 |
+
+The deploy script ran in production mode against mainnet in simulation first, so its factory, arbitrator and timelock checks executed; the calldata it produced was byte-identical to an independent encoding of the approved values, and that calldata was proposed to the Safe with `tools/launch/propose-safe-tx.sh` and executed by the owner. Steps 1 to 3 of section 3 are therefore done; step 4 (profile, site, signed release) and step 5 (seed skills) follow.
