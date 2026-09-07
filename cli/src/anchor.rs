@@ -89,22 +89,43 @@ pub async fn authenticate_source(rpc: &str, profile: &Profile) -> Result<()> {
     // empirically (reported 0x4f1dd231… vs standard-encoding 0x4590cf92…).
     // Field recomputation applies to every header whose FIELDS we trust
     // (`authenticated_header`, used for all anchor-era headers).
+    // Because only the hash is consumed, the block is read as raw JSON rather
+    // than through the typed header: Gnosis's AuRa genesis carries `signature`
+    // and `step` fields and, from some public nodes (PublicNode, observed
+    // 2026-09-07 against the live registry), a null `nonce`, which the typed
+    // decoder rejects although the hash itself is present and correct.
     let genesis = with_deadline(&format!("{rpc} genesis"), async {
         provider
-            .get_block(BlockId::number(0))
+            .raw_request::<_, serde_json::Value>("eth_getBlockByNumber".into(), ("0x0", false))
             .await
-            .map_err(|e| eyre!("{rpc}: {e}"))?
-            .ok_or_else(|| eyre!("{rpc}: genesis block unavailable"))
+            .map_err(|e| eyre!("{rpc}: {e}"))
     })
     .await?;
-    if genesis.header.hash != profile.genesis_hash {
+    let reported = genesis_hash_from_json(&genesis).map_err(|e| eyre!("{rpc}: {e}"))?;
+    if reported != profile.genesis_hash {
         bail!(
             "{rpc}: genesis hash {} != pinned {} — wrong chain or tampered source",
-            genesis.header.hash,
+            reported,
             profile.genesis_hash
         );
     }
     Ok(())
+}
+
+/// The genesis block's reported hash, and nothing else, from a raw
+/// `eth_getBlockByNumber` result. Every other field is ignored on purpose:
+/// legacy-sealed genesis blocks do not round-trip through the standard header
+/// type, and nothing in them is trusted anyway (the pin is the hash).
+fn genesis_hash_from_json(block: &serde_json::Value) -> Result<B256> {
+    if block.is_null() {
+        bail!("genesis block unavailable");
+    }
+    let hash = block
+        .get("hash")
+        .and_then(|h| h.as_str())
+        .ok_or_else(|| eyre!("genesis block has no hash field"))?;
+    hash.parse::<B256>()
+        .map_err(|e| eyre!("genesis hash is not a 32-byte hex string: {e}"))
 }
 
 /// Fetch a header and AUTHENTICATE its integrity: the hash recomputed from the
@@ -251,4 +272,37 @@ pub async fn quorum_anchor_at(profile: &Profile, number: u64) -> Result<QuorumAn
         timestamp,
         sources: profile.anchor_rpcs.len(),
     })
+}
+
+#[cfg(test)]
+mod genesis_tests {
+    use super::genesis_hash_from_json;
+    use alloy::primitives::b256;
+
+    /// Gnosis's AuRa genesis as PublicNode serves it: legacy sealing fields
+    /// (`signature`, `step`) and a null `nonce`, which the typed header
+    /// decoder rejects. Only the hash is read.
+    #[test]
+    fn reads_the_hash_of_a_legacy_sealed_genesis_with_a_null_nonce() {
+        let block: serde_json::Value = serde_json::from_str(
+            r#"{"difficulty":"0x20000","extraData":"0x","gasLimit":"0x989680","gasUsed":"0x0",
+                "hash":"0x4f1dd23188aab3a76b463e4af801b52b1248ef073c648cbdc4c9333d3da79756",
+                "miner":"0x0000000000000000000000000000000000000000","nonce":null,"number":"0x0",
+                "parentHash":"0x0000000000000000000000000000000000000000000000000000000000000000",
+                "signature":"0x00","step":0,"stateRoot":"0x40cf4430ecaa733787d1a65154a3b9efb560c95d9e324a23b97f0609b539133b",
+                "timestamp":"0x0","transactions":[],"uncles":[]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            genesis_hash_from_json(&block).unwrap(),
+            b256!("4f1dd23188aab3a76b463e4af801b52b1248ef073c648cbdc4c9333d3da79756")
+        );
+    }
+
+    #[test]
+    fn rejects_a_missing_block_and_a_malformed_hash() {
+        assert!(genesis_hash_from_json(&serde_json::Value::Null).is_err());
+        assert!(genesis_hash_from_json(&serde_json::json!({"number": "0x0"})).is_err());
+        assert!(genesis_hash_from_json(&serde_json::json!({"hash": "0x1234"})).is_err());
+    }
 }
