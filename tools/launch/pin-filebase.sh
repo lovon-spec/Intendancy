@@ -17,11 +17,23 @@ ENDPOINT=${FILEBASE_ENDPOINT:-https://s3.filebase.com}
 ROOT=$("$HERE/verify-car.sh" "$CAR" | tail -1 | awk '/^ok /{print $2}')
 [ -n "$ROOT" ] || { echo "the CAR does not verify; refusing to upload" >&2; exit 1; }
 aws --endpoint-url "$ENDPOINT" s3 cp "$CAR" "s3://$BUCKET/$KEY" --metadata import=car
-# The AWS CLI title-cases user metadata keys ("Cid"); read the whole map and pick the key case-insensitively.
-REPORTED=$(aws --endpoint-url "$ENDPOINT" s3api head-object --bucket "$BUCKET" --key "$KEY" --query 'Metadata' --output json | python3 -c 'import json,sys; m=json.load(sys.stdin) or {}; print(next((v for k,v in m.items() if k.lower()=="cid"), ""))')
-STATUS=$(aws --endpoint-url "$ENDPOINT" s3api head-object --bucket "$BUCKET" --key "$KEY" --query 'Metadata' --output json | python3 -c 'import json,sys; m=json.load(sys.stdin) or {}; print(next((v for k,v in m.items() if k.lower()=="pinning-status"), ""))')
+# Filebase imports the CAR after the upload returns and fills the object's `cid`
+# and `pinning-status` metadata a few seconds later, so poll (5 s, up to 120 s)
+# before comparing. The AWS CLI title-cases user metadata keys ("Cid"); read the
+# whole map and pick the key case-insensitively.
+read_meta() {
+  aws --endpoint-url "$ENDPOINT" s3api head-object --bucket "$BUCKET" --key "$KEY" --query 'Metadata' --output json \
+    | python3 -c 'import json,sys; m=json.load(sys.stdin) or {}; print(next((v for k,v in m.items() if k.lower()==sys.argv[1]), ""))' "$1"
+}
+REPORTED=""
+for _ in $(seq 1 24); do
+  REPORTED=$(read_meta cid)
+  [ -n "$REPORTED" ] && break
+  sleep 5
+done
+STATUS=$(read_meta pinning-status)
 if [ "$REPORTED" = "$ROOT" ]; then
   echo "pinned $ROOT as s3://$BUCKET/$KEY (pinning status: ${STATUS:-unknown})"
 else
-  echo "MISMATCH: CAR root $ROOT, service reports $REPORTED" >&2; exit 1
+  echo "MISMATCH: CAR root $ROOT, service reports ${REPORTED:-nothing after 120 s} (pinning status: ${STATUS:-unknown})" >&2; exit 1
 fi

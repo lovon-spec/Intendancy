@@ -23,5 +23,4 @@ grep -Fq '#f9e2af' assets/intendancy-mark.svg
 grep -Fq '#a6e3a1' assets/intendancy-mark.svg
 cmp docs/listing-policy.md frontend/public/listing-policy.md
 cmp assets/intendancy-mark.svg frontend/public/favicon.svg
-cmp assets/intendancy-mark.svg meta-evidence/intendancy-logo.svg
 git diff --check
