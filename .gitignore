@@ -39,3 +39,6 @@ Thumbs.db
 .idea/
 *.swp
 *.swo
+
+# Rust build output (cli/, spikes/*): never tracked
+target/
