@@ -14,7 +14,7 @@ SRC="$ROOT/docs/listing-policy.md"
 cmp -s "$SRC" "$ROOT/frontend/public/listing-policy.md" || { echo "the two policy copies differ; fix that first" >&2; exit 1; }
 CHROME=${CHROME:-"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"}
 [ -x "$CHROME" ] || CHROME=$(command -v google-chrome || command -v chromium || command -v chromium-browser || true)
-[ -n "$CHROME" ] && [ -x "$CHROME" ] || { echo "headless Chrome not found; set CHROME=/path/to/chrome" >&2; exit 2; }
+[ -n "${RENDER_SSH:-}" ] || [ -n "$CHROME" ] && [ -x "$CHROME" ] || { echo "headless Chrome not found; set CHROME=/path/to/chrome or RENDER_SSH=user@host" >&2; exit 2; }
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 python3 - "$SRC" "$TMP/policy.html" <<'PY'
 import sys, markdown
@@ -30,6 +30,16 @@ li { margin: 0.2em 0; } @page { size: A4; margin: 18mm 16mm; }
 html = f'<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Agent Skills Registry — Listing Policy</title><style>{css}</style></head><body>{body}</body></html>'
 open(sys.argv[2], "w", encoding="utf-8").write(html)
 PY
-"$CHROME" --headless=new --disable-gpu --no-sandbox --no-pdf-header-footer --print-to-pdf="$OUT" "file://$TMP/policy.html" >/dev/null 2>&1
+if [ -n "${RENDER_SSH:-}" ]; then
+  # Render on another machine over SSH (RENDER_SSH=user@host, RENDER_CHROME=chromium by default): the HTML
+  # goes to a private scratch directory there, Chromium prints it, and the PDF comes back. Used when the
+  # local Chrome cannot run headless. Fonts follow that machine, so note the renderer with the pinned file.
+  R="scratch/render-policy-$$"; ssh "$RENDER_SSH" "mkdir -p ~/$R" && scp -q "$TMP/policy.html" "$RENDER_SSH:$R/policy.html"
+  ssh "$RENDER_SSH" "cd ~/$R && ${RENDER_CHROME:-chromium} --headless=new --disable-gpu --no-sandbox --no-first-run --user-data-dir=profile --no-pdf-header-footer --print-to-pdf=policy.pdf file://\$HOME/$R/policy.html >/dev/null 2>&1; test -s policy.pdf"
+  scp -q "$RENDER_SSH:$R/policy.pdf" "$OUT"; ssh "$RENDER_SSH" "rm -rf ~/$R"
+else
+  # A private profile directory: the default one can be locked by a running Chrome, which crashes headless mode.
+  "$CHROME" --headless=new --disable-gpu --no-sandbox --no-first-run --no-default-browser-check --user-data-dir="$TMP/profile" --no-pdf-header-footer --print-to-pdf="$OUT" "file://$TMP/policy.html" >/dev/null 2>&1
+fi
 head -c 5 "$OUT" | grep -q '%PDF-' || { echo "Chrome did not produce a PDF" >&2; exit 1; }
 echo "$OUT $(wc -c < "$OUT" | tr -d ' ') bytes"
