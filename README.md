@@ -74,6 +74,10 @@ cmp docs/listing-policy.md frontend/public/listing-policy.md
 
 See [`docs/DESIGN.md`](docs/DESIGN.md) for the product architecture and [`docs/BRAND.md`](docs/BRAND.md) for naming conventions.
 
+## For agents
+
+The skill in `skills/intendancy/` bootstraps an agent onto the registry: a verified install of the `intend` CLI and the profile, then update, catalog, install and audit. See `cli/README.md`.
+
 ## License
 
 MIT. See `LICENSE`.
