@@ -14,7 +14,9 @@ SRC="$ROOT/docs/listing-policy.md"
 cmp -s "$SRC" "$ROOT/frontend/public/listing-policy.md" || { echo "the two policy copies differ; fix that first" >&2; exit 1; }
 CHROME=${CHROME:-"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"}
 [ -x "$CHROME" ] || CHROME=$(command -v google-chrome || command -v chromium || command -v chromium-browser || true)
-[ -n "${RENDER_SSH:-}" ] || [ -n "$CHROME" ] && [ -x "$CHROME" ] || { echo "headless Chrome not found; set CHROME=/path/to/chrome or RENDER_SSH=user@host" >&2; exit 2; }
+if [ -z "${RENDER_SSH:-}" ] && { [ -z "$CHROME" ] || [ ! -x "$CHROME" ]; }; then
+  echo "headless Chrome not found; set CHROME=/path/to/chrome or RENDER_SSH=user@host" >&2; exit 2
+fi
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 python3 - "$SRC" "$TMP/policy.html" <<'PY'
 import sys, markdown
@@ -32,11 +34,14 @@ open(sys.argv[2], "w", encoding="utf-8").write(html)
 PY
 if [ -n "${RENDER_SSH:-}" ]; then
   # Render on another machine over SSH (RENDER_SSH=user@host, RENDER_CHROME=chromium by default): the HTML
-  # goes to a private scratch directory there, Chromium prints it, and the PDF comes back. Used when the
-  # local Chrome cannot run headless. Fonts follow that machine, so note the renderer with the pinned file.
-  R="scratch/render-policy-$$"; ssh "$RENDER_SSH" "mkdir -p ~/$R" && scp -q "$TMP/policy.html" "$RENDER_SSH:$R/policy.html"
-  ssh "$RENDER_SSH" "cd ~/$R && ${RENDER_CHROME:-chromium} --headless=new --disable-gpu --no-sandbox --no-first-run --user-data-dir=profile --no-pdf-header-footer --print-to-pdf=policy.pdf file://\$HOME/$R/policy.html >/dev/null 2>&1; test -s policy.pdf"
-  scp -q "$RENDER_SSH:$R/policy.pdf" "$OUT"; ssh "$RENDER_SSH" "rm -rf ~/$R"
+  # goes to a fresh remote temporary directory, Chromium must succeed and produce the PDF, the PDF comes
+  # back, and the remote directory is removed whatever happens. Fonts follow that machine, so note the
+  # renderer with the pinned file.
+  R=$(ssh "$RENDER_SSH" 'mktemp -d "${TMPDIR:-/tmp}/render-policy.XXXXXX"') || { echo "remote mktemp failed" >&2; exit 1; }
+  trap 'ssh "$RENDER_SSH" "rm -rf \"$R\"" >/dev/null 2>&1; rm -rf "$TMP"' EXIT
+  scp -q "$TMP/policy.html" "$RENDER_SSH:$R/policy.html" || { echo "remote copy failed" >&2; exit 1; }
+  ssh "$RENDER_SSH" "cd \"$R\" && ${RENDER_CHROME:-chromium} --headless=new --disable-gpu --no-sandbox --no-first-run --user-data-dir=profile --no-pdf-header-footer --print-to-pdf=policy.pdf \"file://$R/policy.html\" >/dev/null 2>&1 && test -s policy.pdf" || { echo "remote renderer failed" >&2; exit 1; }
+  scp -q "$RENDER_SSH:$R/policy.pdf" "$OUT" || { echo "remote copy back failed" >&2; exit 1; }
 else
   # A private profile directory: the default one can be locked by a running Chrome, which crashes headless mode.
   "$CHROME" --headless=new --disable-gpu --no-sandbox --no-first-run --no-default-browser-check --user-data-dir="$TMP/profile" --no-pdf-header-footer --print-to-pdf="$OUT" "file://$TMP/policy.html" >/dev/null 2>&1
