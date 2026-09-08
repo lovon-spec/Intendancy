@@ -94,6 +94,7 @@ fn entry_from_plan(plan: &InstallPlan, root: Cid, install_dir: &str, pending: bo
         sticky_suspension: None,
         pending,
         migrations: Vec::new(),
+        observations: Vec::new(),
     }
 }
 

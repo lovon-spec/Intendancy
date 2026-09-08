@@ -165,10 +165,37 @@ integrity pass and a fresh point check under the NEW profile — status,
 accepted policy version, governor, arbitrator and code hash at one
 authenticated anchor — before it is rebound. Sticky suspensions are preserved
 or acquired, never cleared (only `enable` clears them); a pending journal stays
-pending; a migration record (old and new context, anchor, status, state) is
-appended to the entry. All entries move or none do, and any failure names the
-entry. The previous profile ships as a release asset next to every new one, so
-`--from` is always available.
+pending; a migration record (old and new context, anchor, status, state, the
+local-integrity verdict, and the audit record the entry carried before) is
+appended to the entry. Context rebinding is all-or-nothing.
+
+Two things do not stop a migration. An entry whose tree is missing, moved
+(the bootstrap skill's quarantine procedure moves a suspended tree out of its
+discovery directory and keeps the lockfile entry) or modified, or whose
+install never finished, migrates in that recorded state — `modified` or
+`incomplete`, with the verifier's text in the record — its manifest, history
+and sticky restrictions intact and its bytes never reported intact or
+enabled; `enable` still requires the tree at the recorded path. And a point
+check that fails for a later entry aborts the rebinding of every entry but
+does not lose what was already proven: adverse statuses (quarantined or
+revoked) proven under the new profile for earlier entries are persisted as
+sticky suspensions plus context-tagged observation records while those
+entries stay bound to their previous context, the report names them, and the
+retry, in which they may be Registered again, carries the restriction across
+so only an explicit `enable` clears it. Nothing is ever fabricated for an
+entry that was not proven.
+
+A failed save is reported by its phase: before the new lockfile was published
+the previous one is intact and nothing was migrated; after it, the new
+contents are visible with unconfirmed durability, and the recovery is a
+locked re-read plus a re-run, which is idempotent because entries already at
+the new context are skipped.
+
+The migration is the lockfile's step only. The catalog in the state directory
+is bound to the context as well and is rebuilt under the new profile with
+`intend update`, before or after the migration. The deployment-era profile
+remains published as a release asset next to every new one, so `--from` is
+always available.
 
 ## Profile (spec §3 — the trust configuration; never from a provider)
 
@@ -204,8 +231,11 @@ form and distinctness are checked here, the on-chain half is the proof that
 that these are the references the deployment and update events actually
 declared is the release manifest's assertion. The policy is mutable behind a
 seven-day timelock (RFC 0001 §9): a change the profile does not list fails
-closed until a new signed profile names its version, and every request keeps
-the version it was submitted under.
+closed until a new signed profile names its version. Every request keeps the
+version it was submitted under; a removal request opened after a change is
+judged under the version then in force, with entries protected only from
+classification rules introduced after their admitting request's version
+(listing policy 2.3, Amendments).
 
 Every RPC — anchor sources and proof providers alike — is authenticated against
 the pinned `chain_id` + `genesis_hash` before use (the genesis check is an

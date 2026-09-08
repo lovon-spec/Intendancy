@@ -180,6 +180,7 @@ fn entry_for(dir: &std::path::Path, files: Vec<LockedFile>, dirs: Vec<String>) -
         sticky_suspension: None,
         pending: false,
         migrations: Vec::new(),
+        observations: Vec::new(),
     }
 }
 

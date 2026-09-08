@@ -1,13 +1,18 @@
 //! Policy-version migration suite (`intend migrate`): the successor relation
 //! gates it, entries move all-or-nothing, sticky suspensions and pending
-//! journals are preserved, fresh states are recorded, and the lockfile keeps
-//! every migration record. The network-free plan/apply pair is exercised with
-//! fixture profiles and hand-built entries; the CLI's own migrate command
-//! feeds it the anchor and per-entry point checks.
+//! journals are preserved, fresh states are recorded, adverse observations
+//! survive an aborted run, quarantined or unpublished installs migrate
+//! without activation, and the lockfile keeps every record. The network-free
+//! plan/apply/partial-failure functions are exercised with fixture profiles,
+//! hand-built entries and real installed trees; the CLI's own migrate command
+//! feeds them the anchor and per-entry point checks.
 
 use alloy::primitives::{Address, Bytes, B256};
-use intend::lockfile::{Entry, Lockfile, ProofContext};
-use intend::migrate::{apply, prepare, Checked};
+use intend::lockfile::{
+    audit_state_for, enable_transition, AuditRecord, Entry, LocalVerdict, LockedFile, Lockfile,
+    ProofContext,
+};
+use intend::migrate::{apply, local_verdict, prepare, record_partial_failure, Checked, Observed};
 use intend::profile::{PolicyUpdate, Profile};
 
 const CID: &str = "bafybeidgtfsc2ro3pfmyggmbz4ea7xg7g4gpehqur7klaadtreyjz6s3fu";
@@ -87,7 +92,33 @@ fn entry(name: &str, dir: &str, ctx: &ProofContext) -> Entry {
         sticky_suspension: None,
         pending: false,
         migrations: Vec::new(),
+        observations: Vec::new(),
     }
+}
+
+/// A real installed tree on disk with a manifest that verifies: SKILL.md and
+/// one more file, digests computed the way the installer records them.
+fn installed(base: &std::path::Path, name: &str, ctx: &ProofContext) -> Entry {
+    use sha2::{Digest, Sha256};
+    let dir = base.join(name);
+    std::fs::create_dir(&dir).unwrap();
+    let files = [
+        ("SKILL.md", format!("---\nname: {name}\n---\nbody\n")),
+        ("a.md", "alpha".into()),
+    ];
+    let mut locked = Vec::new();
+    for (path, content) in &files {
+        std::fs::write(dir.join(path), content.as_bytes()).unwrap();
+        let digest: [u8; 32] = Sha256::digest(content.as_bytes()).into();
+        locked.push(LockedFile {
+            path: (*path).into(),
+            bytes: content.len() as u64,
+            sha256: digest.iter().map(|b| format!("{b:02x}")).collect(),
+        });
+    }
+    let mut e = entry(name, dir.to_str().unwrap(), ctx);
+    e.files = locked;
+    e
 }
 
 fn lock_with(entries: Vec<Entry>) -> Lockfile {
@@ -97,15 +128,16 @@ fn lock_with(entries: Vec<Entry>) -> Lockfile {
     }
 }
 
+fn intact(index: usize, fresh_status: u8) -> Checked {
+    Checked {
+        index,
+        fresh_status,
+        local: LocalVerdict::Intact,
+    }
+}
+
 fn registered(plan: &intend::migrate::MigrationPlan) -> Vec<Checked> {
-    plan.to_migrate
-        .iter()
-        .map(|&index| Checked {
-            index,
-            fresh_status: 1,
-            local_intact: true,
-        })
-        .collect()
+    plan.to_migrate.iter().map(|&i| intact(i, 1)).collect()
 }
 
 #[test]
@@ -141,6 +173,7 @@ fn migrate_rebinds_entries_and_only_the_new_profile_audits_them() {
         (2, 0, 2)
     );
     assert_eq!(summary.suspended(), 0);
+    assert_eq!(summary.entries.len(), 2);
 
     // Now B audits them and A no longer does.
     lock.assert_entries_bound(&b.proof_context()).unwrap();
@@ -156,8 +189,17 @@ fn migrate_rebinds_entries_and_only_the_new_profile_audits_them() {
         assert_eq!(m.from_context, a.deployment_context_id());
         assert_eq!(m.to_context, b.deployment_context_id());
         assert_eq!(
-            (m.anchor_block, m.status, m.state.as_str()),
-            (1234, 1, "current")
+            (
+                m.anchor_block,
+                m.status,
+                m.state.as_str(),
+                m.local_integrity.as_str()
+            ),
+            (1234, 1, "current", "intact")
+        );
+        assert!(
+            m.previous_audit.is_none(),
+            "there was no audit record before"
         );
         assert_eq!(e.audit.as_ref().unwrap().state, "current");
         assert!(e.sticky_suspension.is_none());
@@ -198,31 +240,11 @@ fn migrate_preserves_sticky_suspensions_and_records_fresh_states() {
     ]);
     let plan = prepare(&b, &a, &lock).unwrap();
     let checks = [
-        Checked {
-            index: 0,
-            fresh_status: 1,
-            local_intact: true,
-        },
-        Checked {
-            index: 1,
-            fresh_status: 3,
-            local_intact: true,
-        },
-        Checked {
-            index: 2,
-            fresh_status: 0,
-            local_intact: true,
-        },
-        Checked {
-            index: 3,
-            fresh_status: 1,
-            local_intact: true,
-        },
-        Checked {
-            index: 4,
-            fresh_status: 1,
-            local_intact: true,
-        },
+        intact(0, 1),
+        intact(1, 3),
+        intact(2, 0),
+        intact(3, 1),
+        intact(4, 1),
     ];
     let summary = apply(
         &plan,
@@ -244,7 +266,7 @@ fn migrate_preserves_sticky_suspensions_and_records_fresh_states() {
         ),
         (1, 1, 1, 1, 1)
     );
-    assert_eq!(summary.suspended(), 2);
+    assert_eq!(summary.suspended(), 3);
     let by_name = |n: &str| lock.entries.iter().find(|e| e.name == n).unwrap().clone();
     // A sticky suspension survives a fresh Registered proof: only `enable` clears it.
     let e = by_name("revoked-before");
@@ -302,11 +324,7 @@ fn migrate_is_all_or_nothing_and_skips_entries_already_migrated() {
         apply(&plan, &mut lock, &[], 1, B256::ZERO, 1).unwrap_err()
     );
     assert!(err.contains("do not cover"), "{err}");
-    let wrong = [Checked {
-        index: 0,
-        fresh_status: 1,
-        local_intact: true,
-    }];
+    let wrong = [intact(0, 1)];
     assert!(apply(&plan, &mut lock, &wrong, 1, B256::ZERO, 1).is_err());
     assert_eq!(serde_json::to_string(&lock).unwrap(), before);
     // The right check migrates exactly the one entry.
@@ -358,6 +376,15 @@ fn chained_migrations_accumulate_records_and_round_trip_through_the_lockfile() {
         (e.migrations[0].anchor_block, e.migrations[1].anchor_block),
         (10, 20)
     );
+    // The second migration keeps the first one's audit record.
+    assert_eq!(
+        e.migrations[1]
+            .previous_audit
+            .as_ref()
+            .unwrap()
+            .anchor_block,
+        10
+    );
     // A→D directly is also a successor step (strict prefix), for a consumer
     // that skipped a release.
     let mut fresh = lock_with(vec![entry("one", "/skills/one", &a.proof_context())]);
@@ -371,7 +398,8 @@ fn chained_migrations_accumulate_records_and_round_trip_through_the_lockfile() {
 
 #[test]
 fn lockfiles_without_migration_records_still_load() {
-    // A v2 lockfile written before this feature has no `migrations` field.
+    // A v2 lockfile written before this feature has neither `migrations`
+    // nor `observations`.
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("intend-lock.json");
     let a = profile_a();
@@ -379,7 +407,7 @@ fn lockfiles_without_migration_records_still_load() {
     lock.save(&path).unwrap();
     let raw = std::fs::read_to_string(&path).unwrap();
     assert!(
-        !raw.contains("migrations"),
+        !raw.contains("migrations") && !raw.contains("observations"),
         "empty records are not serialized"
     );
     let loaded = Lockfile::load(&path).unwrap();
@@ -401,5 +429,253 @@ fn lockfiles_without_migration_records_still_load() {
     assert_eq!(
         loaded.entries[0].migrations[0].anchor_block_hash,
         B256::repeat_byte(0x01)
+    );
+}
+
+#[test]
+fn aborted_migration_persists_adverse_observations_and_the_retry_keeps_the_restriction() {
+    let (a, b) = (profile_a(), profile_b());
+    for adverse in [3u8, 0u8] {
+        let mut lock = lock_with(vec![
+            entry("first", "/skills/first", &a.proof_context()),
+            entry("failing", "/skills/failing", &a.proof_context()),
+            entry("fine", "/skills/fine", &a.proof_context()),
+        ]);
+        let plan = prepare(&b, &a, &lock).unwrap();
+        // "first" proved adverse, then "failing"'s point check failed: nothing
+        // is rebound, but the adverse observation is persisted as a sticky
+        // suspension with its new-profile context, and the report names it.
+        let observed = [Observed {
+            index: 0,
+            fresh_status: adverse,
+        }];
+        let affected =
+            record_partial_failure(&mut lock, &plan, &observed, 500, B256::repeat_byte(0x50), 7);
+        assert_eq!(affected.len(), 1);
+        assert_eq!(affected[0].name, "first");
+        let expected_sticky = if adverse == 3 {
+            "quarantined"
+        } else {
+            "revoked"
+        };
+        assert_eq!(affected[0].sticky_suspension, expected_sticky);
+        let first = &lock.entries[0];
+        assert_eq!(
+            first.deployment_context_id,
+            a.deployment_context_id(),
+            "not rebound"
+        );
+        assert_eq!(first.sticky_suspension.as_deref(), Some(expected_sticky));
+        assert_eq!(first.observations.len(), 1);
+        assert_eq!(first.observations[0].context, b.deployment_context_id());
+        assert_eq!(first.observations[0].status, adverse);
+        assert_eq!(first.observations[0].reason, "migration-aborted");
+        assert!(first.audit.is_none(), "no audit record is fabricated");
+        // Unproven entries are untouched.
+        assert!(
+            lock.entries[1].sticky_suspension.is_none()
+                && lock.entries[2].sticky_suspension.is_none()
+        );
+        assert!(lock.entries[1].observations.is_empty());
+        // The old profile still audits the lockfile, and its sweep now sees
+        // the restriction: a fresh Registered proof is reenable-required.
+        lock.assert_entries_bound(&a.proof_context()).unwrap();
+        assert_eq!(
+            audit_state_for(&lock.entries[0], 1, true).0,
+            "reenable-required"
+        );
+        // Retry: "first" is Registered again. The migration completes with
+        // the restriction in force; only an explicit enable clears it.
+        let plan = prepare(&b, &a, &lock).unwrap();
+        let summary = apply(
+            &plan,
+            &mut lock,
+            &registered(&plan),
+            600,
+            B256::repeat_byte(0x60),
+            8,
+        )
+        .unwrap();
+        assert_eq!(
+            (summary.migrated, summary.reenable_required, summary.current),
+            (3, 1, 2)
+        );
+        let first = &lock.entries[0];
+        assert_eq!(first.deployment_context_id, b.deployment_context_id());
+        assert_eq!(first.sticky_suspension.as_deref(), Some(expected_sticky));
+        assert_eq!(first.audit.as_ref().unwrap().state, "reenable-required");
+        assert_eq!(
+            first.observations.len(),
+            1,
+            "the observation stays in the history"
+        );
+        // A non-adverse observation records nothing.
+        let mut fresh = lock_with(vec![entry("x", "/skills/x", &a.proof_context())]);
+        let plan = prepare(&b, &a, &fresh).unwrap();
+        let affected = record_partial_failure(
+            &mut fresh,
+            &plan,
+            &[Observed {
+                index: 0,
+                fresh_status: 1,
+            }],
+            1,
+            B256::ZERO,
+            1,
+        );
+        assert!(affected.is_empty() && fresh.entries[0].observations.is_empty());
+        assert!(fresh.entries[0].sticky_suspension.is_none());
+    }
+}
+
+#[test]
+fn quarantined_moved_and_unpublished_installs_migrate_without_activation() {
+    let (a, b) = (profile_a(), profile_b());
+    let tmp = tempfile::tempdir().unwrap();
+    let intact_entry = installed(tmp.path(), "intact", &a.proof_context());
+    let moved = installed(tmp.path(), "moved", &a.proof_context());
+    // The bootstrap's quarantine procedure: the tree leaves the discovery
+    // path, the lockfile entry stays.
+    std::fs::rename(
+        tmp.path().join("moved"),
+        tmp.path().join("quarantine-moved"),
+    )
+    .unwrap();
+    let mut never_published = entry(
+        "pending",
+        tmp.path().join("pending").to_str().unwrap(),
+        &a.proof_context(),
+    );
+    never_published.pending = true;
+    let mut lock = lock_with(vec![intact_entry, moved, never_published]);
+    let plan = prepare(&b, &a, &lock).unwrap();
+    // The real verdicts from the real filesystem.
+    let verdicts: Vec<LocalVerdict> = lock.entries.iter().map(local_verdict).collect();
+    assert!(verdicts[0].is_intact());
+    assert!(
+        verdicts[1].label().contains("missing"),
+        "{}",
+        verdicts[1].label()
+    );
+    assert!(!verdicts[2].is_intact());
+    // The moved tree's item is ClearingRequested: the integrity failure of
+    // the same entry, found later, does not lose that observation.
+    let checks = vec![
+        Checked {
+            index: 0,
+            fresh_status: 1,
+            local: verdicts[0].clone(),
+        },
+        Checked {
+            index: 1,
+            fresh_status: 3,
+            local: verdicts[1].clone(),
+        },
+        Checked {
+            index: 2,
+            fresh_status: 1,
+            local: verdicts[2].clone(),
+        },
+    ];
+    let summary = apply(&plan, &mut lock, &checks, 900, B256::repeat_byte(0x90), 9).unwrap();
+    assert_eq!(
+        (
+            summary.migrated,
+            summary.current,
+            summary.modified,
+            summary.incomplete
+        ),
+        (3, 1, 1, 1)
+    );
+    assert_eq!(summary.suspended(), 1);
+    // Every entry moved to the new context; none had its bytes reported
+    // intact except the intact one.
+    for e in &lock.entries {
+        assert_eq!(e.deployment_context_id, b.deployment_context_id());
+    }
+    let by_name = |n: &str| lock.entries.iter().find(|e| e.name == n).unwrap().clone();
+    let m = by_name("moved");
+    assert_eq!(m.audit.as_ref().unwrap().state, "modified");
+    assert_eq!(m.sticky_suspension.as_deref(), Some("quarantined"));
+    assert!(m.migrations[0].local_integrity.contains("missing"));
+    assert_eq!(m.migrations[0].state, "modified");
+    assert_eq!(m.files.len(), 2, "the manifest is preserved");
+    let pnd = by_name("pending");
+    assert!(pnd.pending);
+    assert_eq!(pnd.audit.as_ref().unwrap().state, "incomplete");
+    assert_eq!(by_name("intact").migrations[0].local_integrity, "intact");
+    assert!(summary
+        .entries
+        .iter()
+        .find(|e| e.name == "moved")
+        .unwrap()
+        .local_integrity
+        .contains("missing"));
+    // The moved tree cannot be enabled where it is not: enable verifies at
+    // the recorded path, and a failed enable leaves the restriction.
+    let mut m = m;
+    let err = format!(
+        "{:#}",
+        enable_transition(&mut m, &b.proof_context(), 1).unwrap_err()
+    );
+    assert!(err.contains("missing"), "{err}");
+    assert_eq!(
+        m.sticky_suspension.as_deref(),
+        Some("quarantined"),
+        "untouched on failure"
+    );
+    // Audit under the new profile accepts the lockfile as a whole.
+    lock.assert_entries_bound(&b.proof_context()).unwrap();
+}
+
+#[test]
+fn the_previous_audit_record_is_kept_in_the_migration_record() {
+    let (a, b) = (profile_a(), profile_b());
+    let mut e = entry("audited", "/skills/audited", &a.proof_context());
+    e.audit = Some(AuditRecord {
+        checked_at_unix: 42,
+        anchor_block: 4200,
+        anchor_block_hash: B256::repeat_byte(0x42),
+        status: 1,
+        state: "current".into(),
+    });
+    let mut lock = lock_with(vec![e]);
+    let plan = prepare(&b, &a, &lock).unwrap();
+    apply(
+        &plan,
+        &mut lock,
+        &registered(&plan),
+        5000,
+        B256::repeat_byte(0x50),
+        50,
+    )
+    .unwrap();
+    let e = &lock.entries[0];
+    let prev = e.migrations[0]
+        .previous_audit
+        .as_ref()
+        .expect("the old record is kept");
+    assert_eq!(
+        (prev.checked_at_unix, prev.anchor_block, prev.status),
+        (42, 4200, 1)
+    );
+    assert_eq!(e.migrations[0].from_context, a.deployment_context_id());
+    assert_eq!(
+        e.audit.as_ref().unwrap().checked_at_unix,
+        50,
+        "the current record is the fresh one"
+    );
+    // Round trip through the file keeps it.
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("intend-lock.json");
+    lock.save(&path).unwrap();
+    let loaded = Lockfile::load(&path).unwrap();
+    assert_eq!(
+        loaded.entries[0].migrations[0]
+            .previous_audit
+            .as_ref()
+            .unwrap()
+            .anchor_block,
+        4200
     );
 }

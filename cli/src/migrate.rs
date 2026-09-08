@@ -6,17 +6,27 @@
 //! one (`Profile::is_successor_of`), every entry must be bound to the old
 //! context (or already to the new one, in which case it is skipped), and every
 //! migrated entry gets a fresh point check UNDER THE NEW PROFILE plus a local
-//! integrity pass before it is rebound. All entries move or none do.
+//! integrity verdict before it is rebound. Context rebinding is all-or-nothing;
+//! an entry whose bytes are missing, moved or modified, or whose install never
+//! finished, migrates in that recorded state without ever having its bytes
+//! reported intact or enabled. When a migration aborts after some entries
+//! were already proven, the adverse observations among them are persisted as
+//! sticky suspensions — the same property the audit sweep keeps — so a later
+//! return to Registered can never skip the explicit re-enable.
 //!
-//! The network-free parts live here so they are testable with fixtures: a
-//! plan (which entries move), and its application given the fresh checks the
-//! caller obtained. `main.rs` supplies the anchor and the point checks.
+//! The network-free parts live here so they are testable with fixtures: the
+//! plan (which entries move), its application given the fresh checks, and the
+//! safety persistence of a partial failure. `main.rs` supplies the anchor and
+//! the point checks.
 
 use alloy::primitives::B256;
 use eyre::{bail, Result};
 
-use crate::lockfile::{migrate_transition, Lockfile, ProofContext};
+use crate::lockfile::{
+    migrate_transition, record_observation, Entry, LocalVerdict, Lockfile, ProofContext,
+};
 use crate::profile::Profile;
+use crate::store::{AtomicWriteFailure, WritePhase};
 
 /// Which entries a migration carries across, decided before any network work.
 #[derive(Debug)]
@@ -29,12 +39,38 @@ pub struct MigrationPlan {
     pub skipped: Vec<usize>,
 }
 
+/// The local-integrity verdict of an entry's installed bytes, as the
+/// migration records it. A failure is not a refusal: the entry migrates in a
+/// `modified` state, its bytes unauthorized.
+pub fn local_verdict(entry: &Entry) -> LocalVerdict {
+    LocalVerdict::of(entry)
+}
+
 /// The fresh evidence the caller obtained for one entry under the NEW profile.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct Checked {
     pub index: usize,
     pub fresh_status: u8,
-    pub local_intact: bool,
+    pub local: LocalVerdict,
+}
+
+/// A status proven under the new profile before the migration aborted.
+#[derive(Debug, Clone, Copy)]
+pub struct Observed {
+    pub index: usize,
+    pub fresh_status: u8,
+}
+
+/// What one migrated entry recorded.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntryResult {
+    pub name: String,
+    pub install_dir: String,
+    pub fresh_status: u8,
+    pub state: String,
+    pub local_integrity: String,
+    pub sticky_suspension: Option<String>,
 }
 
 /// What a completed migration recorded.
@@ -50,13 +86,27 @@ pub struct Summary {
     pub blocked: usize,
     pub modified: usize,
     pub incomplete: usize,
+    pub entries: Vec<EntryResult>,
 }
 
 impl Summary {
     /// Entries that carry a sticky suspension after the migration.
     pub fn suspended(&self) -> usize {
-        self.quarantined + self.reenable_required
+        self.entries
+            .iter()
+            .filter(|e| e.sticky_suspension.is_some())
+            .count()
     }
+}
+
+/// An entry whose adverse observation was persisted by an aborted migration.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Affected {
+    pub name: String,
+    pub install_dir: String,
+    pub fresh_status: u8,
+    pub sticky_suspension: String,
 }
 
 /// Decide the plan: `new` must be a successor of `old`; each entry must be
@@ -145,7 +195,7 @@ pub fn apply(
             &plan.from,
             &plan.to,
             check.fresh_status,
-            check.local_intact,
+            &check.local,
             anchor_block,
             anchor_block_hash,
             now,
@@ -162,7 +212,131 @@ pub fn apply(
             "incomplete" => summary.incomplete += 1,
             other => bail!("migrating entry {name}: unknown state {other:?}"),
         }
+        summary.entries.push(EntryResult {
+            name,
+            install_dir: entry.install_dir.clone(),
+            fresh_status: check.fresh_status,
+            state: state.into(),
+            local_integrity: check.local.label(),
+            sticky_suspension: entry.sticky_suspension.clone(),
+        });
     }
     lock.entries = entries;
     Ok(summary)
+}
+
+/// A migration aborted after some entries were already proven under the new
+/// profile: persist every ADVERSE observation among them (quarantined or
+/// revoked) as a sticky suspension plus an observation record, without
+/// rebinding any entry — the caller saves the lockfile and reports. Entries
+/// that were not proven, or proved a non-adverse status, are left exactly as
+/// they were: an unfinished migration never fabricates a status. Returns the
+/// affected entries for the report.
+pub fn record_partial_failure(
+    lock: &mut Lockfile,
+    plan: &MigrationPlan,
+    observed: &[Observed],
+    anchor_block: u64,
+    anchor_block_hash: B256,
+    now: u64,
+) -> Vec<Affected> {
+    let mut affected = Vec::new();
+    for o in observed {
+        if !plan.to_migrate.contains(&o.index) {
+            continue;
+        }
+        let Some(entry) = lock.entries.get_mut(o.index) else {
+            continue;
+        };
+        if entry.deployment_context_id != plan.from.context_id {
+            continue;
+        }
+        if let Some(sticky) = record_observation(
+            entry,
+            &plan.to,
+            o.fresh_status,
+            anchor_block,
+            anchor_block_hash,
+            now,
+        ) {
+            affected.push(Affected {
+                name: entry.name.clone(),
+                install_dir: entry.install_dir.clone(),
+                fresh_status: o.fresh_status,
+                sticky_suspension: sticky,
+            });
+        }
+    }
+    affected
+}
+
+/// How a failed save of the migrated lockfile is reported: only a failure
+/// BEFORE publication leaves the previous lockfile in place; after it, the
+/// new contents are visible with unconfirmed durability, and the recovery is
+/// a locked re-read plus an idempotent retry (entries already at the new
+/// context are skipped).
+pub fn describe_save_failure(failure: &AtomicWriteFailure) -> String {
+    match failure.phase {
+        WritePhase::BeforePublish => format!(
+            "the migrated lockfile could not be written ({:#}); the previous lockfile is \
+             intact and no entry was rebound",
+            failure.error
+        ),
+        WritePhase::AfterPublish => format!(
+            "the migrated lockfile was published but its durability could not be confirmed \
+             ({:#}); re-read it under the lock before relying on it, then re-run `intend \
+             migrate` with the same profiles — entries already at the new context are \
+             skipped, so the retry is idempotent",
+            failure.error
+        ),
+    }
+}
+
+/// The report of a partial failure, for the error message.
+pub fn describe_affected(affected: &[Affected]) -> String {
+    if affected.is_empty() {
+        return "No adverse status had been proven before the failure; nothing else was \
+                recorded."
+            .into();
+    }
+    let list: Vec<String> = affected
+        .iter()
+        .map(|a| {
+            format!(
+                "{} at {:?} (status {}, sticky suspension {:?})",
+                a.name, a.install_dir, a.fresh_status, a.sticky_suspension
+            )
+        })
+        .collect();
+    format!(
+        "Adverse observations already proven under the new profile were persisted as sticky \
+         suspensions, with the entries left bound to their previous context: {}. They require \
+         an explicit `intend enable` after the migration completes.",
+        list.join("; ")
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::describe_save_failure;
+    use crate::store::{AtomicWriteFailure, WritePhase};
+
+    #[test]
+    fn save_failures_only_promise_an_intact_lockfile_before_publication() {
+        let before = describe_save_failure(&AtomicWriteFailure {
+            phase: WritePhase::BeforePublish,
+            error: eyre::eyre!("disk full"),
+        });
+        assert!(before.contains("previous lockfile is intact"), "{before}");
+        let after = describe_save_failure(&AtomicWriteFailure {
+            phase: WritePhase::AfterPublish,
+            error: eyre::eyre!("fsync failed"),
+        });
+        assert!(
+            after.contains("durability could not be confirmed"),
+            "{after}"
+        );
+        assert!(after.contains("idempotent"), "{after}");
+        assert!(!after.contains("intact"), "{after}");
+    }
 }

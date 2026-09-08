@@ -73,6 +73,13 @@ pub struct Entry {
     /// never rewritten: the lockfile keeps the whole trust history.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub migrations: Vec<MigrationRecord>,
+    /// Safety observations persisted OUTSIDE a completed migration: a
+    /// migration that proved this item quarantined or revoked under the new
+    /// profile and then aborted on a later entry records the observation
+    /// here and sets the sticky suspension, while the entry stays bound to
+    /// its previous context. Append-only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub observations: Vec<Observation>,
 }
 
 /// One policy-version migration of an entry: its deployment context moved
@@ -89,8 +96,37 @@ pub struct MigrationRecord {
     /// Freshly proven contract status under the new profile.
     pub status: u8,
     /// The §8 state recorded at migration: current | reenable-required |
-    /// quarantined | revoked | blocked | modified | incomplete.
+    /// quarantined | revoked | blocked | modified | incomplete. `modified`
+    /// covers every local-integrity failure, a moved or missing tree
+    /// included; `local_integrity` says which.
     pub state: String,
+    /// Local integrity at migration: `intact`, or the verifier's error text
+    /// (a moved quarantine tree reads "install dir … is missing").
+    pub local_integrity: String,
+    /// The audit record the entry carried before this migration, made under
+    /// `from_context`, kept here so no observation is lost when the entry's
+    /// current audit record is replaced.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_audit: Option<AuditRecord>,
+}
+
+/// A safety observation made under a successor profile's context while the
+/// entry stayed bound to its previous context (an aborted migration): the
+/// proven status at an authenticated anchor, and the sticky suspension it
+/// set or confirmed.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct Observation {
+    pub observed_at_unix: u64,
+    /// The deployment context the proof was made under (the NEW profile's).
+    pub context: B256,
+    pub anchor_block: u64,
+    pub anchor_block_hash: B256,
+    pub status: u8,
+    /// The sticky suspension in force after this observation.
+    pub sticky_suspension: String,
+    /// Why the observation stands alone: `migration-aborted`.
+    pub reason: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -141,6 +177,21 @@ impl Lockfile {
 
     pub fn save(&self, path: &Path) -> Result<()> {
         crate::store::atomic_write(path, &serde_json::to_vec_pretty(self)?)
+    }
+
+    /// `save` reporting the phase of a failure (before or after the new file
+    /// was published), for callers whose failure message must not promise
+    /// that the previous file is still in place.
+    pub fn save_phased(
+        &self,
+        path: &Path,
+    ) -> std::result::Result<(), crate::store::AtomicWriteFailure> {
+        let bytes =
+            serde_json::to_vec_pretty(self).map_err(|e| crate::store::AtomicWriteFailure {
+                phase: crate::store::WritePhase::BeforePublish,
+                error: e.into(),
+            })?;
+        crate::store::atomic_write_phased(path, &bytes)
     }
 
     /// Insert or replace the entry for an install directory. ONLY for
@@ -432,6 +483,35 @@ pub fn enable_transition(
     Ok(cleared)
 }
 
+/// The local-integrity verdict handed to a migration: intact, or the
+/// verifier's error text (missing, moved, modified). A failed verdict never
+/// stops a migration — the entry's trust context and history move while its
+/// bytes stay unauthorized: `modified` state, sticky preserved or acquired,
+/// and `enable` still requires an intact tree at the recorded path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LocalVerdict {
+    Intact,
+    Failed(String),
+}
+
+impl LocalVerdict {
+    pub fn of(entry: &Entry) -> LocalVerdict {
+        match verify_local_integrity(entry) {
+            Ok(()) => LocalVerdict::Intact,
+            Err(e) => LocalVerdict::Failed(format!("{e:#}")),
+        }
+    }
+    pub fn is_intact(&self) -> bool {
+        matches!(self, LocalVerdict::Intact)
+    }
+    pub fn label(&self) -> String {
+        match self {
+            LocalVerdict::Intact => "intact".into(),
+            LocalVerdict::Failed(e) => e.clone(),
+        }
+    }
+}
+
 /// The policy-version migration transition (`intend migrate`). The caller has
 /// freshly PROVEN `fresh_status` for this entry at an authenticated anchor
 /// UNDER THE NEW PROFILE — so the new accepted policy set, the governor, the
@@ -440,9 +520,10 @@ pub fn enable_transition(
 /// entry must be bound to the OLD context exactly (an entry from any other
 /// context is never touched); chain and registry must match both contexts.
 /// Then the entry is rebound to the new context, its §8 state re-derived from
-/// the fresh status with sticky suspensions PRESERVED or ACQUIRED — never
-/// cleared; only `enable_transition` clears — the pending flag left as it is,
-/// and a migration record appended. Returns the recorded state. Nothing is
+/// the fresh status and the local verdict with sticky suspensions PRESERVED
+/// or ACQUIRED — never cleared; only `enable_transition` clears — the pending
+/// flag left as it is, the previous audit record moved into the migration
+/// record, and the record appended. Returns the recorded state. Nothing is
 /// mutated on any failure path.
 #[allow(clippy::too_many_arguments)]
 pub fn migrate_transition(
@@ -450,7 +531,7 @@ pub fn migrate_transition(
     from: &ProofContext,
     to: &ProofContext,
     fresh_status: u8,
-    local_intact: bool,
+    local: &LocalVerdict,
     anchor_block: u64,
     anchor_block_hash: B256,
     now: u64,
@@ -480,7 +561,8 @@ pub fn migrate_transition(
             );
         }
     }
-    let (state, sticky) = audit_state_for(entry, fresh_status, local_intact);
+    let (state, sticky) = audit_state_for(entry, fresh_status, local.is_intact());
+    let previous_audit = entry.audit.take();
     entry.sticky_suspension = sticky;
     entry.audit = Some(AuditRecord {
         checked_at_unix: now,
@@ -497,9 +579,47 @@ pub fn migrate_transition(
         anchor_block_hash,
         status: fresh_status,
         state: state.into(),
+        local_integrity: local.label(),
+        previous_audit,
     });
     entry.deployment_context_id = to.context_id;
     Ok(state)
+}
+
+/// Persist an adverse observation made under a successor profile WITHOUT
+/// rebinding the entry (an aborted migration): the sticky suspension is set
+/// if the entry carries none, and the observation is appended with its
+/// context. A non-adverse status records nothing — an unfinished migration
+/// never fabricates or upgrades a status. Returns the sticky suspension in
+/// force afterwards, if any.
+pub fn record_observation(
+    entry: &mut Entry,
+    context: &ProofContext,
+    fresh_status: u8,
+    anchor_block: u64,
+    anchor_block_hash: B256,
+    now: u64,
+) -> Option<String> {
+    let acquired: Option<&str> = match fresh_status {
+        3 => Some("quarantined"),
+        0 if entry.status_at_install == 1 => Some("revoked"),
+        _ => None,
+    };
+    let acquired = acquired?;
+    if entry.sticky_suspension.is_none() {
+        entry.sticky_suspension = Some(acquired.into());
+    }
+    let in_force = entry.sticky_suspension.clone().unwrap_or_default();
+    entry.observations.push(Observation {
+        observed_at_unix: now,
+        context: context.context_id,
+        anchor_block,
+        anchor_block_hash,
+        status: fresh_status,
+        sticky_suspension: in_force.clone(),
+        reason: "migration-aborted".into(),
+    });
+    Some(in_force)
 }
 
 /// Pure spec-§8 audit classification. Inputs: the freshly PROVEN status, the

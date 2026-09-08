@@ -348,6 +348,7 @@ async fn main() -> Result<()> {
                 sticky_suspension: None,
                 pending: true,
                 migrations: Vec::new(),
+                observations: Vec::new(),
             };
             lock.insert_new(entry.clone())?;
             lock.save(&lock_path).wrap_err(
@@ -617,9 +618,13 @@ async fn main() -> Result<()> {
                 return Ok(());
             }
             // Fresh evidence UNDER THE NEW PROFILE: one authenticated anchor,
-            // then per entry the local integrity pass and the point check
+            // then per entry the local integrity verdict and the point check
             // (status, accepted policy version, governor, arbitrator, code
-            // hash). Any failure aborts the whole migration by name.
+            // hash). A failed verdict does not stop the migration — the entry
+            // moves in a `modified` state, its bytes unauthorized. A failed
+            // point check aborts the rebinding of every entry; the adverse
+            // statuses already proven are persisted first (sticky
+            // suspensions plus observation records), never lost.
             let quorum = anchor::finalized_quorum(&profile).await?;
             let (quorum, mode_label) = finish_anchor(&profile, quorum).await?;
             let mut hw = HighWater::load(&state_dir)?;
@@ -630,29 +635,52 @@ async fn main() -> Result<()> {
                 &quorum,
             )?;
             let mut checks = Vec::with_capacity(plan.to_migrate.len());
+            let mut observed = Vec::with_capacity(plan.to_migrate.len());
             for &i in &plan.to_migrate {
                 let entry = &lock.entries[i];
-                verify_local_integrity(entry).wrap_err_with(|| {
-                    format!(
-                        "entry {} at {:?} does not match its manifest — a migration carries \
-                         only intact installs; audit it, then restore or remove it and retry",
-                        entry.name, entry.install_dir
-                    )
-                })?;
+                let local = migrate::local_verdict(entry);
                 let fresh_status =
-                    chain::point_check(profile.proof_rpc(), &profile, &quorum, entry.item_id)
+                    match chain::point_check(profile.proof_rpc(), &profile, &quorum, entry.item_id)
                         .await
-                        .wrap_err_with(|| {
-                            format!(
-                                "fresh check of entry {} at {:?} failed at block {} — nothing \
-                                 was migrated",
-                                entry.name, entry.install_dir, quorum.block_number
-                            )
-                        })?;
+                    {
+                        Ok(status) => status,
+                        Err(e) => {
+                            let (name, dir) = (entry.name.clone(), entry.install_dir.clone());
+                            let affected = migrate::record_partial_failure(
+                                &mut lock,
+                                &plan,
+                                &observed,
+                                quorum.block_number,
+                                quorum.block_hash,
+                                unix_now()?,
+                            );
+                            let persisted = if affected.is_empty() {
+                                String::new()
+                            } else {
+                                match lock.save_phased(&lock_path) {
+                                    Ok(()) => " The lockfile was saved with those records.".into(),
+                                    Err(f) => format!(
+                                        " Saving those records failed too: {}.",
+                                        migrate::describe_save_failure(&f)
+                                    ),
+                                }
+                            };
+                            bail!(
+                                "fresh check of entry {name} at {dir:?} failed at block {}: {e:#}. \
+                                 No entry was rebound. {}{persisted}",
+                                quorum.block_number,
+                                migrate::describe_affected(&affected)
+                            );
+                        }
+                    };
+                observed.push(migrate::Observed {
+                    index: i,
+                    fresh_status,
+                });
                 checks.push(migrate::Checked {
                     index: i,
                     fresh_status,
-                    local_intact: true,
+                    local,
                 });
             }
             let summary = migrate::apply(
@@ -663,8 +691,9 @@ async fn main() -> Result<()> {
                 quorum.block_hash,
                 unix_now()?,
             )?;
-            lock.save(&lock_path)
-                .wrap_err("the migrated lockfile could not be saved — nothing was migrated")?;
+            if let Err(f) = lock.save_phased(&lock_path) {
+                bail!("{}", migrate::describe_save_failure(&f));
+            }
             println!(
                 "{}",
                 serde_json::json!({
