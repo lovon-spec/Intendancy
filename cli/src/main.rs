@@ -18,6 +18,7 @@ use intend::car;
 use intend::chain;
 use intend::fetch;
 use intend::lockfile::{verify_local_integrity, AuditRecord, Entry, Lockfile};
+use intend::migrate;
 use intend::policy;
 use intend::profile::Profile;
 use intend::schema::{screen, Descriptor};
@@ -88,6 +89,21 @@ enum Cmd {
     Enable {
         /// The entry's install directory (as recorded in the lockfile).
         dir: String,
+        /// Lockfile path (default ./intend-lock.json).
+        #[arg(long)]
+        lockfile: Option<PathBuf>,
+    },
+    /// Carry every lockfile entry across a policy-version transition: the
+    /// active profile must be a strict successor of --from (same deployment
+    /// and trust pins, one or more accepted policy versions added); every
+    /// entry gets a fresh point check under the active profile and a local
+    /// integrity pass, then is rebound to the new deployment context with
+    /// its suspension state preserved. All entries move or none do.
+    Migrate {
+        /// The previous profile the entries were installed under (ships as a
+        /// release asset alongside every profile).
+        #[arg(long)]
+        from: PathBuf,
         /// Lockfile path (default ./intend-lock.json).
         #[arg(long)]
         lockfile: Option<PathBuf>,
@@ -331,6 +347,7 @@ async fn main() -> Result<()> {
                 audit: None,
                 sticky_suspension: None,
                 pending: true,
+                migrations: Vec::new(),
             };
             lock.insert_new(entry.clone())?;
             lock.save(&lock_path).wrap_err(
@@ -403,21 +420,7 @@ async fn main() -> Result<()> {
             // Validate EVERY entry's binding before any mutation: a
             // configuration-level mismatch must abort with the lockfile
             // untouched, never mid-sweep.
-            for entry in &lock.entries {
-                if entry.chain_id != profile.chain_id
-                    || entry.registry != profile.registry
-                    || entry.deployment_context_id != profile.deployment_context_id()
-                {
-                    bail!(
-                        "lockfile entry {} is bound to {}:{} (context {}) — not this \
-                         profile's deployment context",
-                        entry.name,
-                        entry.chain_id,
-                        entry.registry,
-                        entry.deployment_context_id
-                    );
-                }
-            }
+            lock.assert_entries_bound(&profile.proof_context())?;
             let now = unix_now()?;
             let mut all_current = true;
             let mut check_failures = 0usize;
@@ -519,6 +522,27 @@ async fn main() -> Result<()> {
                 .iter_mut()
                 .find(|e| e.install_dir == wanted || e.install_dir == dir)
                 .ok_or_else(|| eyre::eyre!("no lockfile entry installed at {dir:?}"))?;
+            // The context check first and without network: an entry from a
+            // previous policy-version profile is never enabled here; the
+            // message names the migration.
+            if entry.chain_id != profile.chain_id
+                || entry.registry != profile.registry
+                || entry.deployment_context_id != profile.deployment_context_id()
+            {
+                bail!(
+                    "lockfile entry {} at {dir:?} is bound to {}:{} (context {}) — not this \
+                     profile's deployment context ({}:{} context {}). If this profile only \
+                     ADDS an accepted policy version, run `intend migrate --from <previous \
+                     profile>` first (the previous profile ships as a release asset)",
+                    entry.name,
+                    entry.chain_id,
+                    entry.registry,
+                    entry.deployment_context_id,
+                    profile.chain_id,
+                    profile.registry,
+                    profile.deployment_context_id()
+                );
+            }
             let quorum = anchor::finalized_quorum(&profile).await?;
             let (quorum, mode_label) = finish_anchor(&profile, quorum).await?;
             let mut hw = HighWater::load(&state_dir)?;
@@ -558,6 +582,105 @@ async fn main() -> Result<()> {
                     "freshStatus": "Registered",
                     "anchorMode": mode_label,
                     "anchorBlock": quorum.block_number,
+                })
+            );
+        }
+
+        Cmd::Migrate {
+            from,
+            lockfile: lock_path,
+        } => {
+            let _state_lock = ScopeLock::acquire(&state_lock_path(&state_dir))?;
+            let lock_path = intend::lockfile::resolve_lockfile_path(
+                &lock_path.unwrap_or_else(intend::lockfile::default_lockfile_path),
+            )?;
+            let _lockfile_lock = ScopeLock::acquire(&lockfile_lock_path(&lock_path))?;
+            let mut lock = Lockfile::load(&lock_path)?;
+            let old = Profile::load(&from)
+                .wrap_err_with(|| format!("loading the --from profile {}", from.display()))?;
+            // The plan first, without network: successor relation, and every
+            // entry bound to exactly one of the two contexts.
+            let plan = migrate::prepare(&profile, &old, &lock)?;
+            if plan.to_migrate.is_empty() {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "ok": true,
+                        "fromContext": plan.from.context_id,
+                        "toContext": plan.to.context_id,
+                        "migrated": 0,
+                        "skipped": plan.skipped.len(),
+                        "note": "no entry is bound to the --from profile's context",
+                        "lockfile": lock_path.display().to_string(),
+                    })
+                );
+                return Ok(());
+            }
+            // Fresh evidence UNDER THE NEW PROFILE: one authenticated anchor,
+            // then per entry the local integrity pass and the point check
+            // (status, accepted policy version, governor, arbitrator, code
+            // hash). Any failure aborts the whole migration by name.
+            let quorum = anchor::finalized_quorum(&profile).await?;
+            let (quorum, mode_label) = finish_anchor(&profile, quorum).await?;
+            let mut hw = HighWater::load(&state_dir)?;
+            hw.observe(
+                profile.chain_id,
+                profile.genesis_hash,
+                profile.registry,
+                &quorum,
+            )?;
+            let mut checks = Vec::with_capacity(plan.to_migrate.len());
+            for &i in &plan.to_migrate {
+                let entry = &lock.entries[i];
+                verify_local_integrity(entry).wrap_err_with(|| {
+                    format!(
+                        "entry {} at {:?} does not match its manifest — a migration carries \
+                         only intact installs; audit it, then restore or remove it and retry",
+                        entry.name, entry.install_dir
+                    )
+                })?;
+                let fresh_status =
+                    chain::point_check(profile.proof_rpc(), &profile, &quorum, entry.item_id)
+                        .await
+                        .wrap_err_with(|| {
+                            format!(
+                                "fresh check of entry {} at {:?} failed at block {} — nothing \
+                                 was migrated",
+                                entry.name, entry.install_dir, quorum.block_number
+                            )
+                        })?;
+                checks.push(migrate::Checked {
+                    index: i,
+                    fresh_status,
+                    local_intact: true,
+                });
+            }
+            let summary = migrate::apply(
+                &plan,
+                &mut lock,
+                &checks,
+                quorum.block_number,
+                quorum.block_hash,
+                unix_now()?,
+            )?;
+            lock.save(&lock_path)
+                .wrap_err("the migrated lockfile could not be saved — nothing was migrated")?;
+            println!(
+                "{}",
+                serde_json::json!({
+                    "ok": true,
+                    "fromContext": plan.from.context_id,
+                    "toContext": plan.to.context_id,
+                    "migrated": summary.migrated,
+                    "skipped": summary.skipped,
+                    "suspended": summary.suspended(),
+                    "revoked": summary.revoked,
+                    "states": summary,
+                    "freshCheck": "verified, non-exhaustive (point mode per entry, under the new profile)",
+                    "anchorMode": mode_label,
+                    "anchorBlock": quorum.block_number,
+                    "anchorBlockHash": quorum.block_hash,
+                    "lockfile": lock_path.display().to_string(),
                 })
             );
         }

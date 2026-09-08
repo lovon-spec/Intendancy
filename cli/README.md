@@ -65,6 +65,7 @@ intend --profile profile.toml catalog                # list the verified catalog
 intend --profile profile.toml install <name|0xitemID> --dir ./skill [--car tree.car]
 intend --profile profile.toml audit [--lockfile intend-lock.json]
 intend --profile profile.toml enable ./skill         # clear a sticky suspension (fresh proof + integrity required)
+intend --profile new.toml migrate --from old.toml    # carry every entry across a policy-version transition
 ```
 
 - `update` — quorum-anchors a finalized header, obtains a complete snapshot
@@ -142,6 +143,32 @@ intend --profile profile.toml enable ./skill         # clear a sticky suspension
   must carry a root `SKILL.md` whose frontmatter `name`/`description`
   byte-match the descriptor columns; gateway failover continues past
   verification failures, not just HTTP errors.
+
+## Policy version transitions
+
+A profile that accepts a newly announced policy version (one more
+`[[policy_updates]]` entry) has a different deployment context id, because the
+accepted policy set is part of the trust context every catalog and lockfile
+entry is bound to. Installing the new profile therefore makes `audit` and
+`enable` refuse every entry installed under the previous one, by design: state
+verified under one policy set is never consumed under another silently.
+
+`intend --profile new.toml migrate --from old.toml` carries the entries across
+explicitly. It requires the new profile to be a strict successor of the old
+one — the same chain, genesis, registry, code hash, arbitrator and extra data,
+governor and deployment MetaEvidence pins, and the old profile's accepted
+versions as a prefix of the new one's, with at least one version added;
+anything else is a different deployment or a different trust decision and is
+refused with the field named. Every entry must be bound to the old context
+(entries already at the new context are skipped). Each entry then gets a local
+integrity pass and a fresh point check under the NEW profile — status,
+accepted policy version, governor, arbitrator and code hash at one
+authenticated anchor — before it is rebound. Sticky suspensions are preserved
+or acquired, never cleared (only `enable` clears them); a pending journal stays
+pending; a migration record (old and new context, anchor, status, state) is
+appended to the entry. All entries move or none do, and any failure names the
+entry. The previous profile ships as a release asset next to every new one, so
+`--from` is always available.
 
 ## Profile (spec §3 — the trust configuration; never from a provider)
 

@@ -179,6 +179,7 @@ fn entry_for(dir: &std::path::Path, files: Vec<LockedFile>, dirs: Vec<String>) -
         audit: None,
         sticky_suspension: None,
         pending: false,
+        migrations: Vec::new(),
     }
 }
 
@@ -310,7 +311,10 @@ fn serve_rpc_flaky(status_line: &'static str, fail_first: usize, body: Vec<u8>) 
             seen += 1;
             if seen <= fail_first {
                 let _ = stream.write_all(
-                    format!("HTTP/1.1 {status_line}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n").as_bytes(),
+                    format!(
+                        "HTTP/1.1 {status_line}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+                    )
+                    .as_bytes(),
                 );
                 continue;
             }

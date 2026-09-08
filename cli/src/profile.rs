@@ -233,6 +233,60 @@ impl Profile {
         keccak256(&buf)
     }
 
+    /// Successor relation for policy-version transitions (`intend migrate`):
+    /// `self` is a successor of `old` when every trust field that defines
+    /// WHICH deployment and trust context is identical — chain, genesis,
+    /// registry, code hash, the arbitrator and its extra data, the governor,
+    /// the two deployment MetaEvidence pins, the test-mode flag — and
+    /// `old.policy_updates` is a STRICT prefix of `self.policy_updates`: the
+    /// same accepted versions in the same order, then at least one more.
+    /// Nothing else qualifies: an identical profile has nothing to migrate,
+    /// a shorter or changed accepted set is a different trust decision, and
+    /// any other difference is a different deployment — never a continuation
+    /// of this one. The `Err` names the first field that disqualifies.
+    pub fn is_successor_of(&self, old: &Profile) -> std::result::Result<(), String> {
+        macro_rules! same {
+            ($field:ident, $label:expr) => {
+                if self.$field != old.$field {
+                    return Err(format!(
+                        "{} differs (old {:?}, new {:?}) — not a successor of the same deployment",
+                        $label, old.$field, self.$field
+                    ));
+                }
+            };
+        }
+        same!(chain_id, "chain_id");
+        same!(genesis_hash, "genesis_hash");
+        same!(registry, "registry");
+        same!(registry_code_hash, "registry_code_hash");
+        same!(arbitrator, "arbitrator");
+        same!(arbitrator_extra_data, "arbitrator_extra_data");
+        same!(governor, "governor");
+        same!(registration_meta_evidence, "registration_meta_evidence");
+        same!(clearing_meta_evidence, "clearing_meta_evidence");
+        same!(test_headerless_state_root, "test_headerless_state_root");
+        let (old_n, new_n) = (old.policy_updates.len(), self.policy_updates.len());
+        if new_n <= old_n {
+            if self.policy_updates == old.policy_updates {
+                return Err(
+                    "the accepted policy versions are identical — nothing to migrate".into(),
+                );
+            }
+            return Err(format!(
+                "the new profile accepts {new_n} policy version(s) beyond the deployment one, \
+                 the old one {old_n} — a successor only ADDS accepted versions"
+            ));
+        }
+        if self.policy_updates[..old_n] != old.policy_updates[..] {
+            return Err(
+                "the old profile's accepted policy versions are not a prefix of the new \
+                 profile's — the accepted set may only grow, never change"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+
     /// The full proof context handed to state transitions (`enable_transition`).
     pub fn proof_context(&self) -> crate::lockfile::ProofContext {
         crate::lockfile::ProofContext {
@@ -453,6 +507,90 @@ mod tests {
                 .parse::<alloy::primitives::B256>()
                 .unwrap()
         );
+    }
+
+    #[test]
+    fn successor_relation_accepts_only_a_strict_policy_extension() {
+        let cid = "bafybeidgtfsc2ro3pfmyggmbz4ea7xg7g4gpehqur7klaadtreyjz6s3fu";
+        let update = |n: u64| PolicyUpdate {
+            updates: n,
+            registration_meta_evidence: format!("/ipfs/{cid}/registration-{n}.json"),
+            clearing_meta_evidence: format!("/ipfs/{cid}/clearing-{n}.json"),
+        };
+        let a = base_profile();
+        let mut b = base_profile();
+        b.policy_updates.push(update(1));
+        let mut d = b.clone();
+        d.policy_updates.push(update(2));
+        // Strict extension in both steps, and across two steps at once.
+        b.is_successor_of(&a).unwrap();
+        d.is_successor_of(&b).unwrap();
+        d.is_successor_of(&a).unwrap();
+        // Identical: nothing to migrate.
+        assert!(a.is_successor_of(&a).unwrap_err().contains("identical"));
+        // Shrinking or reversing the set is never a successor.
+        assert!(a.is_successor_of(&b).unwrap_err().contains("only ADDS"));
+        assert!(b.is_successor_of(&d).unwrap_err().contains("only ADDS"));
+        // A changed accepted version (same length prefix, different content).
+        let mut b2 = base_profile();
+        b2.policy_updates.push(update(7));
+        let mut d2 = b2.clone();
+        d2.policy_updates.push(update(9));
+        assert!(d2.is_successor_of(&b).unwrap_err().contains("not a prefix"));
+        // Transport endpoints are irrelevant to the relation.
+        let mut b3 = b.clone();
+        b3.anchor_rpcs.push("http://127.0.0.1:3".into());
+        b3.gateways.push("http://gw".into());
+        b3.provider_rpc = Some("http://127.0.0.1:9".into());
+        b3.is_successor_of(&a).unwrap();
+    }
+
+    #[test]
+    fn successor_relation_rejects_every_trust_field_change() {
+        let cid = "bafybeidgtfsc2ro3pfmyggmbz4ea7xg7g4gpehqur7klaadtreyjz6s3fu";
+        let a = base_profile();
+        let extended = |mutate: &dyn Fn(&mut Profile)| {
+            let mut p = base_profile();
+            p.policy_updates.push(PolicyUpdate {
+                updates: 1,
+                registration_meta_evidence: format!("/ipfs/{cid}/registration-1.json"),
+                clearing_meta_evidence: format!("/ipfs/{cid}/clearing-1.json"),
+            });
+            mutate(&mut p);
+            p.is_successor_of(&a).unwrap_err()
+        };
+        assert!(extended(&|p| p.chain_id = 101).contains("chain_id"));
+        assert!(
+            extended(&|p| p.genesis_hash = alloy::primitives::B256::repeat_byte(0x99))
+                .contains("genesis_hash")
+        );
+        assert!(
+            extended(&|p| p.registry = alloy::primitives::Address::repeat_byte(0x99))
+                .contains("registry differs")
+        );
+        assert!(
+            extended(&|p| p.registry_code_hash = alloy::primitives::B256::repeat_byte(0x99))
+                .contains("registry_code_hash")
+        );
+        assert!(
+            extended(&|p| p.arbitrator = alloy::primitives::Address::repeat_byte(0x99))
+                .contains("arbitrator differs")
+        );
+        assert!(extended(
+            &|p| p.arbitrator_extra_data = alloy::primitives::Bytes::from(vec![1u8; 64])
+        )
+        .contains("arbitrator_extra_data"));
+        assert!(
+            extended(&|p| p.governor = alloy::primitives::Address::repeat_byte(0x99))
+                .contains("governor")
+        );
+        assert!(extended(&|p| p.registration_meta_evidence.push('x'))
+            .contains("registration_meta_evidence"));
+        assert!(
+            extended(&|p| p.clearing_meta_evidence.push('x')).contains("clearing_meta_evidence")
+        );
+        assert!(extended(&|p| p.test_headerless_state_root = true)
+            .contains("test_headerless_state_root"));
     }
 
     #[test]
