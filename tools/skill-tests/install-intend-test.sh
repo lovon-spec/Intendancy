@@ -25,7 +25,9 @@ fixture() { d="$TMP/fx-$1"; mkdir -p "$d"; find "$ASSETS" -maxdepth 1 -type f -e
 serve() { PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()'); python3 -u -m http.server --bind 127.0.0.1 --directory "$1" "$PORT" >"$TMP/server.log" 2>&1 & SERVER=$!; for i in $(seq 1 50); do curl -fsS -o /dev/null "http://127.0.0.1:$PORT/SHA256SUMS" 2>/dev/null && break; sleep 0.1; done; URL="http://127.0.0.1:$PORT"; }
 stop() { if [ -n "$SERVER" ]; then kill "$SERVER" 2>/dev/null; wait "$SERVER" 2>/dev/null || true; fi; SERVER=; }
 run() { home="$TMP/home-$1"; shift; INTEND_RELEASE_BASE_URL="$1" INTEND_HOME="$home" sh "${2:-$INSTALLER}" >"$TMP/out" 2>&1 && rc=0 || rc=$?; if [ -x "$home/bin/intend" ]; then installed=yes; else installed=no; fi; }
-pass=0; fail=0; check() { if [ "$1" = "$2" ] && [ "$3" = "$4" ]; then echo "ok   $5"; pass=$((pass+1)); else echo "FAIL $5 (rc=$1 want $2, installed=$3 want $4): $(tail -1 "$TMP/out")"; fail=$((fail+1)); fi; }
+# 0. The skill's frontmatter must be real YAML, and the description must disclose exactly the executable and profile digests the installer pins.
+python3 "$ROOT/tools/skill-tests/check-skill-frontmatter.py" "$ROOT/skills/intendancy/SKILL.md" "$INSTALLER" && echo "ok   frontmatter parses and discloses the pinned digests" || { echo "FAIL frontmatter/digest check"; exit 1; }
+pass=1; fail=0; check() { if [ "$1" = "$2" ] && [ "$3" = "$4" ]; then echo "ok   $5"; pass=$((pass+1)); else echo "FAIL $5 (rc=$1 want $2, installed=$3 want $4): $(tail -1 "$TMP/out")"; fail=$((fail+1)); fi; }
 # 1. Genuine release.
 d=$(fixture genuine); serve "$d"; run genuine "$URL"; check "$rc" 0 "$installed" yes "genuine release installs"; stop
 # 2. Wrong pin.

@@ -1,15 +1,15 @@
 ---
 name: intendancy
-description: Use when an agent needs skills from the Agent Skills Registry, the Kleros-curated skill list on Gnosis. DOWNLOADS AND RUNS AN EXTERNAL BINARY: the intend CLI v0.1.0-alpha.1 from the github.com/lovon-spec/Intendancy release: linux-x86_64 sha256:526b98590b1432ee9e8f7cce6ffdf7de31bee28fc49df9f521b107ff4e969546, linux-aarch64 sha256:d82b3ce3700fac14b116c8d21eca6da6ef5ed8470e5d30475c480b5403d4b1e8, macos-x86_64 sha256:b5ff8937c34ffa15822606dfa814ac65a18b76fc2ba909664d3655d35ff500ac, macos-aarch64 sha256:602d872e3b6e884bf03037ce6984da8b96ad3cd9d029a4e5502c8d0a6903a721, profile sha256:805c24364d9caa4994601216decb78c6ef8793cf0bb2a254ce43eb7abb4e9bfb. The installer verifies digest and release signature and aborts on mismatch before anything runs. Then: verified catalog refresh, skill lookup, exact-bytes install of separately registered skills, audit. Verification is relative to a header-quorum anchor (alpha); a strict light client is pending.
+description: "Use when an agent needs skills from the Agent Skills Registry, the Kleros-curated skill list on Gnosis. DOWNLOADS AND RUNS AN EXTERNAL BINARY: the intend CLI v0.1.0-alpha.1 from the github.com/lovon-spec/Intendancy release, executable digests linux-x86_64 sha256:5682e412a647a6cd05085c4dda3f6462152892a699da51ac761ee4c080748e45, linux-aarch64 sha256:2fe1ea4d61b5dd69c9541d3b46d2e75c23f835e8dfd940af7b56d0d6369db131, macos-x86_64 sha256:6ba45797c4899abd2ef0c60f4592ad27317596e34a65da6aa28f28dd358efd3b, macos-aarch64 sha256:a922991eb8d53124fee9fef82fe8dd9027de73091b3fb8eb6c6e71615505f4ac, profile sha256:805c24364d9caa4994601216decb78c6ef8793cf0bb2a254ce43eb7abb4e9bfb. The installer verifies release signature, archive and binary digests and aborts on mismatch before anything runs. Then: verified catalog refresh, skill lookup, exact-bytes install of separately registered skills, audit. Verification is relative to a header-quorum anchor (alpha); a strict light client is pending."
 license: MIT
-compatibility: Requires network access and a POSIX shell with curl, tar, gpg 2.x, and sha256sum or shasum. Installs the intend binary and the registry profile under $INTEND_HOME (default ~/.intend). Linux and macOS, x86_64 and aarch64.
+compatibility: "Requires network access and a POSIX shell with curl, tar, gpg 2.x, and sha256sum or shasum. Installs the intend binary and the registry profile under $INTEND_HOME (default ~/.intend). Linux and macOS, x86_64 and aarch64."
 ---
 
 # Intendancy: skills from the Agent Skills Registry
 
 The Agent Skills Registry is a Kleros Curate list on Gnosis Chain. Anyone may list a skill by posting a deposit; anyone may challenge it; challenged entries are decided by jurors against the listing policy. An entry that survives is Registered. For each entry the registry stores the content address (CID) of the exact skill tree. The `intend` CLI turns that into an install path: it proves the complete list against chain state anchored by a header quorum, fetches the tree from public IPFS gateways, verifies every block by hash, and installs exactly those bytes.
 
-What this skill downloads and runs is fixed: the intend CLI release named in the description, identified by the digests there and in `scripts/install-intend.sh`. The installer verifies the release key against a pinned fingerprint, requires every signature to be made under that key, checks the archive and the profile against the pinned digests, and installs nothing on any failure. A newer CLI ships as a new version of this skill with new digests; this version does not update itself.
+What this skill downloads and runs is fixed: the intend CLI release named in the description, whose executables are identified there by digest; `scripts/install-intend.sh` also pins each platform archive and the profile. The installer verifies the release key against a pinned fingerprint, requires every signature to be made under that key, checks the archive, the extracted executable and the profile against the pinned digests, and installs nothing on any failure. A newer CLI ships as a new version of this skill with new digests; this version does not update itself.
 
 The CLI treats the RPC, the gateways and any snapshot provider as untrusted and fails closed. Its anchor today is a finalized header agreed by independent public RPCs, which the tool labels a degraded alpha; a strict light client is pending. Report that mode whenever you report on installed skills.
 
@@ -61,7 +61,10 @@ The directory receives exactly the bytes the registry points at, after a fresh o
 intend_cli audit --lockfile "$LOCK"
 ```
 
-Re-checks every lockfile entry against the registry's current state and records the result. Audit reports and records; it does not stop a runtime from loading a directory. For an entry reported as suspended (`ClearingRequested`) or revoked (`Absent`), move its directory out of the skills path, for example to `$INTEND_HOME/quarantine/<name>`, keeping the bytes and the lockfile for inspection, and do not edit the tree. Move it back only after `intend_cli enable "<dir>" --lockfile "$LOCK"` succeeds on a fresh status and integrity check.
+Re-checks every lockfile entry against the registry's current state and records the result. Audit reports and records; it does not stop a runtime from loading a directory, and `enable` verifies a skill at the path recorded in the lockfile, so a moved tree cannot be re-enabled where it sits. Use this sequence for an entry reported as suspended (`ClearingRequested`) or revoked (`Absent`):
+
+1. Move its directory out of the skills path, for example to `$INTEND_HOME/quarantine/<name>`, keeping the bytes and the lockfile for inspection. Do not edit the tree.
+2. To re-enable later: stop every runtime that discovers that skills directory, move the directory back to its recorded path, run `intend_cli enable "<recorded-path>" --lockfile "$LOCK"`, and if that fails move it out again before any runtime resumes. Only a successful `enable` on a fresh status and integrity check leaves the skill in place.
 
 ## Rules
 

@@ -12,7 +12,9 @@
 #      signature that GnuPG reports as valid AND made under that primary key
 #      (VALIDSIG binding, so a bundled second key cannot vouch for anything);
 #   3. the archive's digest equals its entry in the allowlist and in the
-#      signed checksum list; the profile's digest equals its allowlist entry.
+#      signed checksum list; the profile's digest equals its allowlist entry;
+#   4. the extracted intend executable equals its pinned digest, the one the
+#      skill's description discloses.
 # Any failure leaves nothing installed.
 #
 #   install-intend.sh [--home DIR]
@@ -29,6 +31,10 @@ DIGEST_LINUX_X86_64="526b98590b1432ee9e8f7cce6ffdf7de31bee28fc49df9f521b107ff4e9
 DIGEST_LINUX_AARCH64="d82b3ce3700fac14b116c8d21eca6da6ef5ed8470e5d30475c480b5403d4b1e8"
 DIGEST_MACOS_X86_64="b5ff8937c34ffa15822606dfa814ac65a18b76fc2ba909664d3655d35ff500ac"
 DIGEST_MACOS_AARCH64="602d872e3b6e884bf03037ce6984da8b96ad3cd9d029a4e5502c8d0a6903a721"
+BINARY_LINUX_X86_64="5682e412a647a6cd05085c4dda3f6462152892a699da51ac761ee4c080748e45"
+BINARY_LINUX_AARCH64="2fe1ea4d61b5dd69c9541d3b46d2e75c23f835e8dfd940af7b56d0d6369db131"
+BINARY_MACOS_X86_64="6ba45797c4899abd2ef0c60f4592ad27317596e34a65da6aa28f28dd358efd3b"
+BINARY_MACOS_AARCH64="a922991eb8d53124fee9fef82fe8dd9027de73091b3fb8eb6c6e71615505f4ac"
 DIGEST_PROFILE="805c24364d9caa4994601216decb78c6ef8793cf0bb2a254ce43eb7abb4e9bfb"
 HOME_DIR="${INTEND_HOME:-$HOME/.intend}"
 while [ $# -gt 0 ]; do case "$1" in
@@ -42,8 +48,8 @@ else echo "missing tool: sha256sum or shasum" >&2; exit 2; fi
 case "$(uname -s)" in Linux) OS=linux;; Darwin) OS=macos;; *) echo "unsupported OS: $(uname -s)" >&2; exit 2;; esac
 case "$(uname -m)" in x86_64|amd64) ARCH=x86_64;; arm64|aarch64) ARCH=aarch64;; *) echo "unsupported architecture: $(uname -m)" >&2; exit 2;; esac
 case "$OS-$ARCH" in
-  linux-x86_64) EXPECTED="$DIGEST_LINUX_X86_64";; linux-aarch64) EXPECTED="$DIGEST_LINUX_AARCH64";;
-  macos-x86_64) EXPECTED="$DIGEST_MACOS_X86_64";; macos-aarch64) EXPECTED="$DIGEST_MACOS_AARCH64";; esac
+  linux-x86_64) EXPECTED="$DIGEST_LINUX_X86_64"; EXPECTED_BIN="$BINARY_LINUX_X86_64";; linux-aarch64) EXPECTED="$DIGEST_LINUX_AARCH64"; EXPECTED_BIN="$BINARY_LINUX_AARCH64";;
+  macos-x86_64) EXPECTED="$DIGEST_MACOS_X86_64"; EXPECTED_BIN="$BINARY_MACOS_X86_64";; macos-aarch64) EXPECTED="$DIGEST_MACOS_AARCH64"; EXPECTED_BIN="$BINARY_MACOS_AARCH64";; esac
 BASE="${INTEND_RELEASE_BASE_URL:-https://github.com/$REPO/releases/download/$VERSION}"
 ARCHIVE="intend-${VERSION#v}-$OS-$ARCH.tar.gz"
 WORK=$(mktemp -d); GNUPGHOME=$(mktemp -d); export GNUPGHOME
@@ -76,7 +82,10 @@ PACTUAL=$(digest_of "$WORK/agent-skills-registry.toml")
 mkdir -p "$HOME_DIR/bin" "$HOME_DIR/profiles" "$HOME_DIR/state"
 tar -xzf "$WORK/$ARCHIVE" -C "$WORK"
 BIN=$(find "$WORK" -type f -name intend | head -1); [ -n "$BIN" ] || { echo "archive holds no intend binary" >&2; exit 1; }
+# 4. The extracted executable itself must match its pinned digest before it is installed or run.
+BACTUAL=$(digest_of "$BIN")
+[ "$BACTUAL" = "$EXPECTED_BIN" ] || { echo "binary digest $BACTUAL is not the pinned $EXPECTED_BIN" >&2; exit 1; }
 install -m 0755 "$BIN" "$HOME_DIR/bin/intend"
 install -m 0644 "$WORK/agent-skills-registry.toml" "$HOME_DIR/profiles/agent-skills-registry.toml"
 echo "installed $HOME_DIR/bin/intend ($("$HOME_DIR/bin/intend" --version)) and $HOME_DIR/profiles/agent-skills-registry.toml"
-echo "verified: key $KEY_FINGERPRINT, archive sha256:$EXPECTED, profile sha256:$DIGEST_PROFILE"
+echo "verified: key $KEY_FINGERPRINT, archive sha256:$EXPECTED, binary sha256:$EXPECTED_BIN, profile sha256:$DIGEST_PROFILE"
