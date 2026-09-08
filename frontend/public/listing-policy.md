@@ -1,6 +1,6 @@
 # Agent Skills Registry — Listing Policy
 
-**Version**: 2.2
+**Version**: 2.3
 **Chain**: Gnosis Chain (chain ID 100)
 
 ## Purpose
@@ -19,6 +19,8 @@ This registry lists **skills only**: directories containing a `SKILL.md` per the
 - **Virtual root name** — a Tree CID does not encode a name for its outer directory. Wherever a skill specification or runtime needs that name, this policy defines it to be the descriptor's Name value.
 - **Descriptor** — the on-chain item: the RLP encoding of the column values below, stored in registry contract storage. The item ID is `keccak256(descriptor)`.
 - **Submission period** — for this policy, the interval from submission of a registration request until that request is challenged or its challenge deadline passes.
+- **Runtime** — the program that loads a skill tree and executes its instructions, for example Claude Code. A service, daemon or tool that the instructions talk to or invoke is a dependency, not a runtime; a skill describes its dependencies in its `compatibility` frontmatter.
+- **Runtime-specific feature** — a tool, hook, command, invocation convention or `metadata` namespace outside the Agent Skills specification that the tree relies on in order to work. A feature that several runtimes implement is still runtime-specific; a tree that relies on it declares those runtimes. A tree does not rely on a feature that it uses only in an optional example or adapter with a working generic fallback, nor on runtime-namespaced `metadata` that other runtimes may ignore, unless the tree's correctness, security or required permissions depend on that metadata being honoured. A requirement for an external program, service or daemon is a dependency, described in `compatibility`, and does not by itself make a tree runtime-specific.
 
 ## Descriptor Schema
 
@@ -29,7 +31,7 @@ Each submission consists of exactly these columns, in order:
 | 1 | **Name** | Yes | Must be **byte-identical** to the `name` field of the SKILL.md frontmatter in the skill tree. |
 | 2 | **Description** | Yes | Must be **byte-identical** to the `description` field of the SKILL.md frontmatter (≤1024 characters per the Agent Skills specification). |
 | 3 | **Tree CID** | Yes | The skill tree's IPFS CID in **canonical form**: CIDv1, base32, lowercase, DAG-PB codec, and a 32-byte SHA-256 multihash, referring to a UnixFS directory. Bare CID only — no `/ipfs/` prefix, no path suffix, no gateway URL. **IPNS names, DNSLink, and any mutable or resolvable-indirection reference are prohibited.** |
-| 4 | **Runtimes** | Yes | Supported agent runtimes as a list of identifiers: each identifier is lowercase snake case, a letter followed by letters, digits or underscores, at most 32 characters; identifiers are separated by single commas with no whitespace, are unique, are in ascending byte order, and number at most 16. The identifier `generic` is reserved: use it, alone, if the skill follows the Agent Skills specification without runtime-specific metadata or features; otherwise list the specific runtimes (e.g., `claude_code,cursor`) and do not include `generic`. A column that does not match this form fails criterion 1. |
+| 4 | **Runtimes** | Yes | Supported agent runtimes as a list of identifiers: each identifier is lowercase snake case, a letter followed by letters, digits or underscores, at most 32 characters; identifiers are separated by single commas with no whitespace, are unique, are in ascending byte order, and number at most 16. The identifier `generic` is reserved: use it, alone, if the tree relies on no runtime-specific feature; otherwise list the runtimes whose features it relies on (e.g., `claude_code,cursor`) and do not include `generic`. A column that does not match this form fails criterion 1. |
 | 5 | **Origin** | No | A provenance claim: either a public git repository URL followed by `@` and a full 40-character commit SHA-1, or a publisher URL (e.g., `https://skills.example.org`). If present, it must satisfy acceptance criterion 6. Leave empty if unused. |
 | 6 | **Reserved** | Yes | MUST be the empty string. It has no semantics in this policy version; assigning any future meaning requires a versioned policy revision. |
 
@@ -51,18 +53,20 @@ The tree consists of directories and regular files ONLY: it MUST NOT contain sym
 The Name and Description columns are byte-identical to the SKILL.md frontmatter `name` and `description`. (This guarantees the on-chain strings a consumer indexes are exactly the strings an agent runtime will load from the verified artifact.)
 
 ### 4. Accurate Runtimes
-The skill works (or is designed to work) with each declared runtime. Runtimes must not be listed speculatively. A skill using runtime-specific `metadata` or features must not declare `generic`.
+The Runtimes column is derived from the tree. A tree that relies on no runtime-specific feature declares `generic` alone. A tree that relies on runtime-specific features declares the runtimes whose features it relies on; each declared runtime must be one the skill works, or is designed to work, with, and runtimes must not be listed speculatively. Omitting a further runtime the skill also works with is not a violation. Declaring `generic` for a tree that relies on a runtime-specific feature, or a specific runtime for a tree that relies on none, is.
 
 ### 5. No Malicious Behavior
 The skill tree must NOT:
 
 - Exfiltrate user data, credentials, environment variables, or files;
 - Contain prompt injection targeting the consuming agent, other tools, or **reviewers and automated evaluators** (instructions addressed to "the reviewer", "the scanner", or an LLM judge are a violation in themselves);
-- **Fetch and execute, or fetch and inject into agent context as instructions, content whose exact bytes are not bound by a SHA-256 integrity digest written as `sha256:` followed by exactly 64 lowercase hexadecimal characters.** The behavior and digest must also be prominently disclosed in the Description, and the skill must verify the fetched bytes and abort on mismatch before execution or context injection. Disclosed retrieval of mutable external data is permitted only when that data is not interpreted as code or agent instructions;
-- Download or execute external binaries unless the behavior is prominently declared, the exact binary is identified by a `sha256:<64 lowercase hex characters>` digest, and the skill verifies that digest before execution and aborts on mismatch;
+- **Fetch and execute, or fetch and inject into agent context as instructions, content whose exact bytes are not bound by a SHA-256 integrity digest written as `sha256:` followed by exactly 64 lowercase hexadecimal characters.** The behavior must be prominently disclosed in the Description; the digest belongs in the tree, in the script or instructions that perform the check, and the skill must verify the fetched bytes and abort on mismatch before execution or context injection. Disclosed retrieval of mutable external data is permitted only when that data is not interpreted as code or agent instructions;
+- Download or execute external binaries unless the behavior is prominently declared in the Description, the exact binary is identified in the tree by a `sha256:<64 lowercase hex characters>` digest, and the skill verifies that digest before execution and aborts on mismatch;
 - Disable, bypass, or instruct the agent to bypass security mechanisms, sandboxing, or permission prompts;
 - Install persistent backdoors or perform resource abuse (e.g., cryptocurrency mining);
 - Employ **analysis-evasion constructions**, including: bulk padding or filler designed to truncate review (e.g., massive runs of whitespace or repeated tokens); executable logic or instructions concealed inside binary or archive assets (.docx, .zip, images, etc.) that the skill later extracts or interprets; encodings or obfuscation whose evident purpose is to defeat inspection. Such constructions are grounds for rejection **on construction alone**, without demonstrating the concealed payload's behavior.
+
+**Registry-verified loading.** Loading a skill tree that is separately registered in this registry is not fetching unbound content under the two clauses above, provided that the loader: pins this registry's identity, meaning the chain, the registry address, its runtime code hash, its arbitrator and extra data, its governor and the policy versions it accepts, and accepts no other registry in its place; obtains a fresh, authenticated `Registered` status for the item under a permitted anchor mode before each acquisition, meaning every installation or update into a discovery directory, every re-enablement and every direct injection the loader performs; binds the exact item ID, descriptor and Tree CID; verifies the complete tree, every block, path and byte, and completes every check before any of those bytes become discoverable by a runtime, executable or injected as instructions; records the item ID, Tree CID and anchor of each acquisition; fails closed on any failure; keeps its own verification logic and trust configuration either within its tree or identified there by fixed integrity digests against which any externally obtained verifier or configuration is checked before use, a fetched checksum, a mutable reference or a signature alone never supplying or replacing that identity; discloses the loading behavior in its Description; and preserves the runtime's permission prompts. The exception covers acquisition only: later use of already-installed bytes is governed by the consumer provisions on pending removal, and content the acquired tree fetches in turn must itself satisfy this criterion. Two anchor modes are permitted under this version: a strict light client, and a header quorum, meaning at least two independently operated, locally configured sources agreeing on the same chain-bound finalized header, which the loader must label with its trust assumption and must not fall back to silently from a configured strict mode. Retiring either mode requires a later version of this policy.
 
 ### 6. Truthful Origin
 If the Origin column is present, it must verifiably bind the claimed publisher or repository to this entry's **exact submitted semantic skill tree**:
@@ -80,7 +84,7 @@ A false or unverifiable Origin claim is a violation of the same severity as impe
 The entry must not impersonate, typosquat, or misleadingly copy another project's or publisher's name, description, or branding.
 
 ### 8. No Duplicates
-The entry must not duplicate an already-registered entry with the same Tree CID. (Identical descriptors are already impossible: the item ID is the descriptor hash.)
+The entry must not duplicate an already-registered entry: neither the same Tree CID, nor a tree that differs from a registered entry's, across the complete tree including assets, templates, schemas and references, only by edits with no material effect on capability, behavior, security or trust configuration, or supported environment. Cosmetic edits, whitespace, comments, formatting and wording that leave behavior unchanged, are such edits; a security fix, a compatibility correction, a changed functional asset or a changed dependency or profile pin is not when it has such an effect, however small its diff, and a changed hash alone does not show one. A challenger shows the difference from the authenticated trees; the submitter may show the material effect. (Identical descriptors are already impossible: the item ID is the descriptor hash.)
 
 ### 9. Reviewable Size
 The skill tree's total size must not exceed **2 MiB**. (This bound exists so that jurors and challengers can realistically review entries; it may be revised in future policy versions.)
@@ -117,7 +121,7 @@ Consumers MUST treat every `ClearingRequested` item uniformly, regardless of who
 
 ## Amendments
 
-This policy can change only through the registry's governor, a timelock contract that queues every change on chain seven days before it takes effect. Each request keeps the policy version it was submitted under.
+This policy can change only through the registry's governor, a timelock contract that queues every change on chain seven days before it takes effect. Each request keeps the policy version it was submitted under; a removal request opened after a change is judged under the version then in force, except that an entry is not removable solely for failing a runtime or duplicate classification rule, in criterion 4, criterion 8 or the Runtimes column of the descriptor schema, that was introduced after the policy version of the registration request that established its current registration. A registration after a removal takes its own baseline, and nothing here waives descriptor syntax or the safety criteria.
 
 ## Evidence Guidelines
 
