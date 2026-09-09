@@ -17,7 +17,7 @@ WORK=${1:-$(mktemp -d)}
 mkdir -p "$WORK"
 USDC=0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48
 COMMON=(--anchor-rpc https://rpc.gnosischain.com --anchor-rpc https://gnosis-rpc.publicnode.com
-        --log-rpc https://rpc.gnosischain.com --log-rpc https://gnosis-rpc.publicnode.com
+        --log-rpc https://rpc.gnosischain.com --log-rpc https://gnosis.gateway.tenderly.co
         --provider-rpc https://gnosis-rpc.publicnode.com
         --gateway https://trustless-gateway.link --gateway https://dweb.link --gateway https://ipfs.io)
 

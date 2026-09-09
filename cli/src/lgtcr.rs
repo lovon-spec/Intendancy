@@ -384,7 +384,7 @@ pub async fn enumerate(
             Ok(logs) => logs,
             Err(e) => {
                 if window > 1000 {
-                    window /= 2;
+                    window = shrink_window(window, &format!("{e:#}"));
                     continue;
                 }
                 return Err(e.wrap_err("eth_getLogs failed even at the smallest window"));
@@ -409,6 +409,21 @@ pub async fn enumerate(
         start = end + 1;
     }
     Ok(out)
+}
+
+/// The next log window after a failure: the limit the source names in its
+/// error when it names one (PublicNode: "exceed maximum block range: 50000"),
+/// otherwise half. The window only ever shrinks, and never below 1000.
+pub fn shrink_window(window: u64, error: &str) -> u64 {
+    let named = error
+        .split(|c: char| !c.is_ascii_digit())
+        .filter_map(|d| d.parse::<u64>().ok())
+        .filter(|n| *n >= 1000 && *n < window)
+        .max();
+    match named {
+        Some(n) if error.to_ascii_lowercase().contains("range") => n,
+        _ => (window / 2).max(1000),
+    }
 }
 
 /// Describe the difference between two candidate sets, or `None` when equal.
@@ -1938,6 +1953,24 @@ mod tests {
         assert!(skipped[0].reason.contains("eip155"));
         let (tokens, _) = tokens_from_snapshot(&snap, true, "ipfs://").unwrap();
         assert_eq!(tokens.len(), 2);
+    }
+
+    #[test]
+    fn log_window_shrinks_to_a_named_limit_or_halves() {
+        assert_eq!(shrink_window(1_000_000, "server returned an error response: error code -32701: exceed maximum block range: 50000"), 50_000);
+        assert_eq!(
+            shrink_window(1_000_000, "deadline of 30s exceeded"),
+            500_000
+        );
+        assert_eq!(
+            shrink_window(1_000_000, "query returned more than 10000 results"),
+            500_000
+        );
+        assert_eq!(
+            shrink_window(40_000, "exceed maximum block range: 50000"),
+            20_000
+        );
+        assert_eq!(shrink_window(1500, "anything"), 1000);
     }
 
     #[test]

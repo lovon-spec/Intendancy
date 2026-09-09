@@ -66,8 +66,10 @@ struct SourceArgs {
     /// Header-quorum sources (at least two, independently operated).
     #[arg(long = "anchor-rpc", default_values_t = ["https://rpc.gnosischain.com".to_string(), "https://gnosis-rpc.publicnode.com".to_string()])]
     anchor_rpcs: Vec<String>,
-    /// Log sources whose NewItem sets must agree (at least two).
-    #[arg(long = "log-rpc", default_values_t = ["https://rpc.gnosischain.com".to_string(), "https://gnosis-rpc.publicnode.com".to_string()])]
+    /// Log sources whose NewItem sets must agree (at least two). The defaults
+    /// serve historical logs in million-block windows; PublicNode and dRPC cap
+    /// a request at 10,000 blocks and work too, two thousand calls slower.
+    #[arg(long = "log-rpc", default_values_t = ["https://rpc.gnosischain.com".to_string(), "https://gnosis.gateway.tenderly.co".to_string()])]
     log_rpcs: Vec<String>,
     /// Untrusted proof provider (must serve eth_getProof at the anchor).
     #[arg(long, default_value = "https://gnosis-rpc.publicnode.com")]
