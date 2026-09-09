@@ -679,3 +679,253 @@ fn the_previous_audit_record_is_kept_in_the_migration_record() {
         4200
     );
 }
+
+// ---- the production orchestration with injected save failures ----
+
+use intend::migrate::{confirm_durable, run, Evidence, Outcome};
+use intend::store::{atomic_write_with_sync, AtomicWriteFailure, WritePhase};
+use std::cell::Cell;
+
+fn evidence(index: usize, fresh: Result<u8, &str>) -> Evidence {
+    Evidence {
+        index,
+        local: LocalVerdict::Intact,
+        fresh: fresh.map_err(str::to_owned),
+    }
+}
+
+/// A saver that really writes through the atomic path but whose parent
+/// directory sync fails: the new contents are published, durability is not.
+fn saver_after_publish(
+    path: &std::path::Path,
+) -> impl Fn(&Lockfile) -> Result<(), AtomicWriteFailure> + '_ {
+    move |lock: &Lockfile| {
+        let bytes = serde_json::to_vec_pretty(lock).unwrap();
+        atomic_write_with_sync(path, &bytes, &|_| {
+            Err(std::io::Error::other("simulated fsync failure"))
+        })
+    }
+}
+
+#[test]
+fn a_rerun_after_an_unconfirmed_save_republishes_the_lockfile_before_reporting_success() {
+    let (a, b) = (profile_a(), profile_b());
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("intend-lock.json");
+    let mut lock = lock_with(vec![
+        entry("one", "/skills/one", &a.proof_context()),
+        entry("two", "/skills/two", &a.proof_context()),
+    ]);
+    lock.save(&path).unwrap();
+    // The migration itself: the rename publishes, the directory sync fails.
+    let plan = prepare(&b, &a, &lock).unwrap();
+    let ev = vec![evidence(0, Ok(1)), evidence(1, Ok(1))];
+    let err = format!(
+        "{:#}",
+        run(
+            &mut lock,
+            &plan,
+            &ev,
+            100,
+            B256::repeat_byte(0x10),
+            5,
+            &saver_after_publish(&path)
+        )
+        .unwrap_err()
+    );
+    assert!(err.contains("durability could not be confirmed"), "{err}");
+    assert!(err.contains("republished durably"), "{err}");
+    // The new contents are on disk: reloaded, every entry is at the new context.
+    let reloaded = Lockfile::load(&path).unwrap();
+    assert!(reloaded
+        .entries
+        .iter()
+        .all(|e| e.deployment_context_id == b.deployment_context_id()));
+    assert!(reloaded.entries.iter().all(|e| e.migrations.len() == 1));
+    let plan = prepare(&b, &a, &reloaded).unwrap();
+    assert!(plan.to_migrate.is_empty() && plan.skipped.len() == 2);
+    // The re-run: the no-op path must attempt the durable republish. A second
+    // sync failure is still an error...
+    let attempts = Cell::new(0);
+    let failing = |l: &Lockfile| {
+        attempts.set(attempts.get() + 1);
+        saver_after_publish(&path)(l)
+    };
+    let err = format!("{:#}", confirm_durable(&reloaded, &failing).unwrap_err());
+    assert_eq!(attempts.get(), 1, "a durability attempt happened");
+    assert!(err.contains("confirm its durability failed"), "{err}");
+    // ...and success comes only when the republish succeeds.
+    let attempts = Cell::new(0);
+    let real = |l: &Lockfile| {
+        attempts.set(attempts.get() + 1);
+        l.save_phased(&path)
+    };
+    assert!(confirm_durable(&reloaded, &real).unwrap());
+    assert_eq!(attempts.get(), 1);
+    let after = Lockfile::load(&path).unwrap();
+    for (x, y) in after.entries.iter().zip(&reloaded.entries) {
+        assert_eq!(x.migrations.len(), 1, "no extra migration record");
+        assert_eq!(
+            x.sticky_suspension, y.sticky_suspension,
+            "restrictions unchanged"
+        );
+        assert_eq!(x.deployment_context_id, y.deployment_context_id);
+    }
+    // An empty lockfile has nothing to confirm and touches nothing.
+    let empty = lock_with(Vec::new());
+    let attempts = Cell::new(0);
+    let counting = |l: &Lockfile| {
+        attempts.set(attempts.get() + 1);
+        l.save_phased(&path)
+    };
+    assert!(!confirm_durable(&empty, &counting).unwrap());
+    assert_eq!(attempts.get(), 0);
+}
+
+#[test]
+fn an_aborted_run_reports_truthfully_what_happened_to_the_safety_records() {
+    let (a, b) = (profile_a(), profile_b());
+    let make = |tmp: &std::path::Path| {
+        let path = tmp.join("intend-lock.json");
+        let lock = lock_with(vec![
+            entry("first", "/skills/first", &a.proof_context()),
+            entry("failing", "/skills/failing", &a.proof_context()),
+        ]);
+        lock.save(&path).unwrap();
+        (path, lock)
+    };
+    let ev = vec![evidence(0, Ok(3)), evidence(1, Err("rpc down"))];
+    let anchor = B256::repeat_byte(0x33);
+
+    // (a) The safety save succeeds: the report says so, the disk carries the
+    // restriction, no entry was rebound.
+    let tmp = tempfile::tempdir().unwrap();
+    let (path, mut lock) = make(tmp.path());
+    let plan = prepare(&b, &a, &lock).unwrap();
+    let real = |l: &Lockfile| l.save_phased(&path);
+    let err = format!(
+        "{:#}",
+        run(&mut lock, &plan, &ev, 700, anchor, 9, &real).unwrap_err()
+    );
+    assert!(err.contains("failing") && err.contains("rpc down"), "{err}");
+    assert!(
+        err.contains("first") && err.contains("quarantined"),
+        "{err}"
+    );
+    assert!(
+        err.contains(&format!("{}", b.deployment_context_id())),
+        "{err}"
+    );
+    assert!(err.contains("anchor block 700"), "{err}");
+    assert!(err.contains("confirmed durable"), "{err}");
+    let disk = Lockfile::load(&path).unwrap();
+    assert_eq!(
+        disk.entries[0].sticky_suspension.as_deref(),
+        Some("quarantined")
+    );
+    assert_eq!(
+        disk.entries[0].deployment_context_id,
+        a.deployment_context_id()
+    );
+    assert!(disk.entries[1].sticky_suspension.is_none());
+
+    // (b) The safety save fails BEFORE publication: the report must not claim
+    // persistence, and the disk is unchanged.
+    let tmp = tempfile::tempdir().unwrap();
+    let (path, mut lock) = make(tmp.path());
+    let plan = prepare(&b, &a, &lock).unwrap();
+    let before_publish = |_: &Lockfile| -> Result<(), AtomicWriteFailure> {
+        Err(AtomicWriteFailure {
+            phase: WritePhase::BeforePublish,
+            error: eyre::eyre!("disk full"),
+        })
+    };
+    let err = format!(
+        "{:#}",
+        run(&mut lock, &plan, &ev, 700, anchor, 9, &before_publish).unwrap_err()
+    );
+    assert!(err.contains("does NOT carry"), "{err}");
+    assert!(err.contains("disk full"), "{err}");
+    assert!(!err.contains("confirmed durable"), "{err}");
+    assert!(
+        err.contains("first") && err.contains("anchor block 700"),
+        "{err}"
+    );
+    let disk = Lockfile::load(&path).unwrap();
+    assert!(
+        disk.entries[0].sticky_suspension.is_none(),
+        "nothing reached the disk"
+    );
+    assert!(disk.entries[0].observations.is_empty());
+
+    // (c) The safety save publishes but its durability is unconfirmed: the
+    // report distinguishes visibility from durability; the disk carries it.
+    let tmp = tempfile::tempdir().unwrap();
+    let (path, mut lock) = make(tmp.path());
+    let plan = prepare(&b, &a, &lock).unwrap();
+    let err = format!(
+        "{:#}",
+        run(
+            &mut lock,
+            &plan,
+            &ev,
+            700,
+            anchor,
+            9,
+            &saver_after_publish(&path)
+        )
+        .unwrap_err()
+    );
+    assert!(err.contains("durability could not be confirmed"), "{err}");
+    assert!(!err.contains("confirmed durable"), "{err}");
+    assert!(
+        err.contains("first") && err.contains("anchor block 700"),
+        "{err}"
+    );
+    let disk = Lockfile::load(&path).unwrap();
+    assert_eq!(
+        disk.entries[0].sticky_suspension.as_deref(),
+        Some("quarantined")
+    );
+    assert_eq!(
+        disk.entries[0].observations[0].context,
+        b.deployment_context_id()
+    );
+
+    // (d) No adverse observation before the failure: nothing is saved and the
+    // report says so.
+    let tmp = tempfile::tempdir().unwrap();
+    let (path, mut lock) = make(tmp.path());
+    let plan = prepare(&b, &a, &lock).unwrap();
+    let attempts = Cell::new(0);
+    let counting = |l: &Lockfile| {
+        attempts.set(attempts.get() + 1);
+        l.save_phased(&path)
+    };
+    let ev_ok = vec![evidence(0, Ok(1)), evidence(1, Err("rpc down"))];
+    let err = format!(
+        "{:#}",
+        run(&mut lock, &plan, &ev_ok, 700, anchor, 9, &counting).unwrap_err()
+    );
+    assert!(err.contains("No adverse status"), "{err}");
+    assert_eq!(
+        attempts.get(),
+        0,
+        "no safety save without adverse observations"
+    );
+
+    // (e) The success path through the same orchestration lands on disk.
+    let tmp = tempfile::tempdir().unwrap();
+    let (path, mut lock) = make(tmp.path());
+    let plan = prepare(&b, &a, &lock).unwrap();
+    let real = |l: &Lockfile| l.save_phased(&path);
+    let all_ok = vec![evidence(0, Ok(1)), evidence(1, Ok(1))];
+    let Outcome::Migrated(summary) =
+        run(&mut lock, &plan, &all_ok, 800, anchor, 10, &real).unwrap();
+    assert_eq!((summary.migrated, summary.current), (2, 2));
+    let disk = Lockfile::load(&path).unwrap();
+    assert!(disk
+        .entries
+        .iter()
+        .all(|e| e.deployment_context_id == b.deployment_context_id()));
+}

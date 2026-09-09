@@ -187,9 +187,15 @@ entry that was not proven.
 
 A failed save is reported by its phase: before the new lockfile was published
 the previous one is intact and nothing was migrated; after it, the new
-contents are visible with unconfirmed durability, and the recovery is a
-locked re-read plus a re-run, which is idempotent because entries already at
-the new context are skipped.
+contents are visible with unconfirmed durability. The recovery is a locked
+re-read plus a re-run with the same profiles: every entry is then already at
+the new context, so nothing is rebound and no record is appended, and the
+command republishes the unchanged lockfile durably before reporting success
+— a second sync failure is still an error. When a later point check aborts a
+run, the report says what happened to the safety records of the entries
+proven adverse before it: recorded and confirmed durable, written with
+unconfirmed durability, or not saved at all (in which case the named entries
+are to be treated as suspended until a re-run records them).
 
 The migration is the lockfile's step only. The catalog in the state directory
 is bound to the context as well and is rebuilt under the new profile with

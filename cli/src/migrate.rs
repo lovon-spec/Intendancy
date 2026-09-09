@@ -273,8 +273,8 @@ pub fn record_partial_failure(
 /// How a failed save of the migrated lockfile is reported: only a failure
 /// BEFORE publication leaves the previous lockfile in place; after it, the
 /// new contents are visible with unconfirmed durability, and the recovery is
-/// a locked re-read plus an idempotent retry (entries already at the new
-/// context are skipped).
+/// a locked re-read plus a re-run, which republishes the unchanged lockfile
+/// durably once every entry is at the new context.
 pub fn describe_save_failure(failure: &AtomicWriteFailure) -> String {
     match failure.phase {
         WritePhase::BeforePublish => format!(
@@ -285,19 +285,58 @@ pub fn describe_save_failure(failure: &AtomicWriteFailure) -> String {
         WritePhase::AfterPublish => format!(
             "the migrated lockfile was published but its durability could not be confirmed \
              ({:#}); re-read it under the lock before relying on it, then re-run `intend \
-             migrate` with the same profiles — entries already at the new context are \
-             skipped, so the retry is idempotent",
+             migrate` with the same profiles: entries already at the new context are skipped \
+             and the unchanged lockfile is republished durably, so the re-run completes the \
+             recovery and reports success only once that sync succeeds",
             failure.error
         ),
     }
 }
 
-/// The report of a partial failure, for the error message.
-pub fn describe_affected(affected: &[Affected]) -> String {
+/// The persistence step, injectable so the orchestration is testable with
+/// deterministic write failures. The command passes `Lockfile::save_phased`.
+pub type Saver<'a> = &'a dyn Fn(&Lockfile) -> std::result::Result<(), AtomicWriteFailure>;
+
+/// What happened to the safety records of an aborted migration on disk.
+#[derive(Debug)]
+pub enum SafetySave {
+    /// No adverse observation preceded the failure; nothing needed saving.
+    NothingToSave,
+    /// The records reached the lockfile and the write was confirmed durable.
+    Durable,
+    /// The records are visible in the lockfile but the write's durability
+    /// could not be confirmed.
+    Published(AtomicWriteFailure),
+    /// The write failed before publication: the records exist in memory only
+    /// and the lockfile on disk does not carry them.
+    NotSaved(AtomicWriteFailure),
+}
+
+/// The report of an aborted migration, truthful about what reached the disk:
+/// the failing entry, then the affected entries with the proof context and
+/// anchor their observations were made under, then the fate of the safety
+/// save. Names, context and anchor appear in every variant so an operator
+/// knows which restrictions are and are not guaranteed to survive.
+#[allow(clippy::too_many_arguments)]
+pub fn describe_abort(
+    failing_name: &str,
+    failing_dir: &str,
+    error: &str,
+    plan: &MigrationPlan,
+    anchor_block: u64,
+    anchor_block_hash: B256,
+    affected: &[Affected],
+    safety: &SafetySave,
+) -> String {
+    let head = format!(
+        "fresh check of entry {failing_name} at {failing_dir:?} failed at block {anchor_block}: \
+         {error}. No entry was rebound."
+    );
     if affected.is_empty() {
-        return "No adverse status had been proven before the failure; nothing else was \
-                recorded."
-            .into();
+        return format!(
+            "{head} No adverse status had been proven before the failure; nothing else was \
+             recorded."
+        );
     }
     let list: Vec<String> = affected
         .iter()
@@ -308,12 +347,145 @@ pub fn describe_affected(affected: &[Affected]) -> String {
             )
         })
         .collect();
-    format!(
-        "Adverse observations already proven under the new profile were persisted as sticky \
-         suspensions, with the entries left bound to their previous context: {}. They require \
-         an explicit `intend enable` after the migration completes.",
-        list.join("; ")
-    )
+    let what = format!(
+        "Adverse observations proven under the new profile (context {}, anchor block \
+         {anchor_block}, hash {anchor_block_hash}) for {} require an explicit `intend enable` \
+         after the migration completes; the entries stay bound to their previous context {}.",
+        plan.to.context_id,
+        list.join("; "),
+        plan.from.context_id
+    );
+    let fate = match safety {
+        SafetySave::NothingToSave => String::new(),
+        SafetySave::Durable => " They were recorded in the lockfile as sticky suspensions and \
+                               observation records, and the write was confirmed durable."
+            .into(),
+        SafetySave::Published(f) => format!(
+            " They were written to the lockfile, but the write's durability could not be \
+             confirmed ({:#}); re-read the lockfile under the lock and re-run the migration \
+             once the cause is fixed.",
+            f.error
+        ),
+        SafetySave::NotSaved(f) => format!(
+            " Saving them FAILED before publication ({:#}): the lockfile on disk does NOT carry \
+             these restrictions, they existed in this process only. Treat the named entries \
+             as suspended until a re-run records them.",
+            f.error
+        ),
+    };
+    format!("{head} {what}{fate}")
+}
+
+/// The fresh evidence gathered for one planned entry, in plan order: the
+/// local verdict, and the point check under the new profile or the error
+/// that stopped the sweep. The command stops gathering at the first error,
+/// so evidence after it is absent by construction.
+#[derive(Debug, Clone)]
+pub struct Evidence {
+    pub index: usize,
+    pub local: LocalVerdict,
+    pub fresh: std::result::Result<u8, String>,
+}
+
+/// The result of a migration run.
+#[derive(Debug)]
+pub enum Outcome {
+    /// Every planned entry was rebound and the lockfile saved durably.
+    Migrated(Summary),
+}
+
+/// The migration orchestration, shared by the command and the tests: walk the
+/// evidence in plan order; at the first point-check error persist the
+/// adverse observations already proven (a safety-only save, no rebinding)
+/// and fail with a report truthful about that save; otherwise apply every
+/// transition and save once, failing with the save's phase if it fails.
+pub fn run(
+    lock: &mut Lockfile,
+    plan: &MigrationPlan,
+    evidence: &[Evidence],
+    anchor_block: u64,
+    anchor_block_hash: B256,
+    now: u64,
+    save: Saver,
+) -> Result<Outcome> {
+    let mut checks = Vec::with_capacity(evidence.len());
+    let mut observed = Vec::with_capacity(evidence.len());
+    for ev in evidence {
+        match &ev.fresh {
+            Ok(status) => {
+                observed.push(Observed {
+                    index: ev.index,
+                    fresh_status: *status,
+                });
+                checks.push(Checked {
+                    index: ev.index,
+                    fresh_status: *status,
+                    local: ev.local.clone(),
+                });
+            }
+            Err(error) => {
+                let (name, dir) = match lock.entries.get(ev.index) {
+                    Some(e) => (e.name.clone(), e.install_dir.clone()),
+                    None => (format!("#{}", ev.index), String::new()),
+                };
+                let affected = record_partial_failure(
+                    lock,
+                    plan,
+                    &observed,
+                    anchor_block,
+                    anchor_block_hash,
+                    now,
+                );
+                let safety = if affected.is_empty() {
+                    SafetySave::NothingToSave
+                } else {
+                    match save(lock) {
+                        Ok(()) => SafetySave::Durable,
+                        Err(f) if f.phase == WritePhase::AfterPublish => SafetySave::Published(f),
+                        Err(f) => SafetySave::NotSaved(f),
+                    }
+                };
+                bail!(
+                    "{}",
+                    describe_abort(
+                        &name,
+                        &dir,
+                        error,
+                        plan,
+                        anchor_block,
+                        anchor_block_hash,
+                        &affected,
+                        &safety
+                    )
+                );
+            }
+        }
+    }
+    let summary = apply(plan, lock, &checks, anchor_block, anchor_block_hash, now)?;
+    if let Err(f) = save(lock) {
+        bail!("{}", describe_save_failure(&f));
+    }
+    Ok(Outcome::Migrated(summary))
+}
+
+/// The all-skipped case: every entry is already at the new context, which is
+/// also what a re-run after an unconfirmed save sees. Reporting success then
+/// requires confirming durability, so the unchanged loaded contents are
+/// republished through the saver — no migration record appended, no
+/// restriction changed — and a failure stays a failure. An empty lockfile has
+/// nothing to confirm.
+pub fn confirm_durable(lock: &Lockfile, save: Saver) -> Result<bool> {
+    if lock.entries.is_empty() {
+        return Ok(false);
+    }
+    match save(lock) {
+        Ok(()) => Ok(true),
+        Err(f) => bail!(
+            "every entry is already at the new context, but republishing the lockfile to \
+             confirm its durability failed: {}",
+            describe_save_failure(&f)
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -336,7 +508,7 @@ mod tests {
             after.contains("durability could not be confirmed"),
             "{after}"
         );
-        assert!(after.contains("idempotent"), "{after}");
+        assert!(after.contains("republished durably"), "{after}");
         assert!(!after.contains("intact"), "{after}");
     }
 }

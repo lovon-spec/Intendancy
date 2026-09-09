@@ -602,7 +602,13 @@ async fn main() -> Result<()> {
             // The plan first, without network: successor relation, and every
             // entry bound to exactly one of the two contexts.
             let plan = migrate::prepare(&profile, &old, &lock)?;
+            let saver = |l: &Lockfile| l.save_phased(&lock_path);
             if plan.to_migrate.is_empty() {
+                // Nothing to rebind — also what the re-run after an
+                // unconfirmed save sees. Success here means the unchanged
+                // lockfile was republished durably (nothing else changes);
+                // a failure stays a failure.
+                let confirmed = migrate::confirm_durable(&lock, &saver)?;
                 println!(
                     "{}",
                     serde_json::json!({
@@ -611,6 +617,7 @@ async fn main() -> Result<()> {
                         "toContext": plan.to.context_id,
                         "migrated": 0,
                         "skipped": plan.skipped.len(),
+                        "durability": if confirmed { "confirmed: the unchanged lockfile was republished and synced" } else { "nothing to confirm: the lockfile has no entries" },
                         "note": "no entry is bound to the --from profile's context",
                         "lockfile": lock_path.display().to_string(),
                     })
@@ -620,11 +627,11 @@ async fn main() -> Result<()> {
             // Fresh evidence UNDER THE NEW PROFILE: one authenticated anchor,
             // then per entry the local integrity verdict and the point check
             // (status, accepted policy version, governor, arbitrator, code
-            // hash). A failed verdict does not stop the migration — the entry
-            // moves in a `modified` state, its bytes unauthorized. A failed
-            // point check aborts the rebinding of every entry; the adverse
-            // statuses already proven are persisted first (sticky
-            // suspensions plus observation records), never lost.
+            // hash), gathered in plan order and stopping at the first point
+            // check that fails. The shared orchestration then either rebinds
+            // every entry and saves once, or persists the adverse statuses
+            // already proven and fails with a report that says whether that
+            // safety save reached the disk.
             let quorum = anchor::finalized_quorum(&profile).await?;
             let (quorum, mode_label) = finish_anchor(&profile, quorum).await?;
             let mut hw = HighWater::load(&state_dir)?;
@@ -634,66 +641,33 @@ async fn main() -> Result<()> {
                 profile.registry,
                 &quorum,
             )?;
-            let mut checks = Vec::with_capacity(plan.to_migrate.len());
-            let mut observed = Vec::with_capacity(plan.to_migrate.len());
+            let mut evidence = Vec::with_capacity(plan.to_migrate.len());
             for &i in &plan.to_migrate {
                 let entry = &lock.entries[i];
                 let local = migrate::local_verdict(entry);
-                let fresh_status =
-                    match chain::point_check(profile.proof_rpc(), &profile, &quorum, entry.item_id)
+                let fresh =
+                    chain::point_check(profile.proof_rpc(), &profile, &quorum, entry.item_id)
                         .await
-                    {
-                        Ok(status) => status,
-                        Err(e) => {
-                            let (name, dir) = (entry.name.clone(), entry.install_dir.clone());
-                            let affected = migrate::record_partial_failure(
-                                &mut lock,
-                                &plan,
-                                &observed,
-                                quorum.block_number,
-                                quorum.block_hash,
-                                unix_now()?,
-                            );
-                            let persisted = if affected.is_empty() {
-                                String::new()
-                            } else {
-                                match lock.save_phased(&lock_path) {
-                                    Ok(()) => " The lockfile was saved with those records.".into(),
-                                    Err(f) => format!(
-                                        " Saving those records failed too: {}.",
-                                        migrate::describe_save_failure(&f)
-                                    ),
-                                }
-                            };
-                            bail!(
-                                "fresh check of entry {name} at {dir:?} failed at block {}: {e:#}. \
-                                 No entry was rebound. {}{persisted}",
-                                quorum.block_number,
-                                migrate::describe_affected(&affected)
-                            );
-                        }
-                    };
-                observed.push(migrate::Observed {
+                        .map_err(|e| format!("{e:#}"));
+                let stop = fresh.is_err();
+                evidence.push(migrate::Evidence {
                     index: i,
-                    fresh_status,
-                });
-                checks.push(migrate::Checked {
-                    index: i,
-                    fresh_status,
                     local,
+                    fresh,
                 });
+                if stop {
+                    break;
+                }
             }
-            let summary = migrate::apply(
-                &plan,
+            let migrate::Outcome::Migrated(summary) = migrate::run(
                 &mut lock,
-                &checks,
+                &plan,
+                &evidence,
                 quorum.block_number,
                 quorum.block_hash,
                 unix_now()?,
+                &saver,
             )?;
-            if let Err(f) = lock.save_phased(&lock_path) {
-                bail!("{}", migrate::describe_save_failure(&f));
-            }
             println!(
                 "{}",
                 serde_json::json!({
