@@ -52,6 +52,10 @@ gpg --verify agent-skills-registry.toml.asc agent-skills-registry.toml
 
 ## The production profile
 
+Since 2026-09-09 the profile lists policy version 1 (listing policy 2.3) under `policy_updates`, so it accepts the registry at `metaEvidenceUpdates` 0 or 1 and fails closed on anything else. Listing a version changes the deployment context, so installs made under the alpha.1 profile are carried over with `intend migrate --from agent-skills-registry.toml` using the alpha.1 profile asset; a profile with any other trust field changed, or one that drops a version, is refused as a non-successor.
+
+
+
 `profiles/agent-skills-registry.toml` is the deployment manifest for the Agent Skills Registry on Gnosis (registry `0x67DBE6A9597635074546e08B92eE617bF02168f9`, governor the timelock `0xc8Ba4c0AD3554EDB0a9A4C8D73Bf87410A313ADa`, court 19 with three jurors, the two MetaEvidence references the deployment emitted). It ships as a release asset and is verified before use. First verified against the live chain on 2026-09-07: header quorum from two operators, complete enumeration proven, an empty catalog.
 
 Two facts about public Gnosis endpoints shape it. The foundation RPC (`rpc.gnosischain.com`) serves `eth_getProof` only about 32 blocks behind head, short of finalized depth, so the proof provider is PublicNode. And the header quorum takes the lowest finalized block across its sources and needs every source to answer, so a source with lagging finality (1rpc, about forty minutes behind) or intermittent errors (dRPC) is left out.
