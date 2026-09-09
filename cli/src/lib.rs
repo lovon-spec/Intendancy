@@ -8,6 +8,7 @@ pub mod car;
 pub mod chain;
 pub mod fetch;
 pub mod lockfile;
+pub mod migrate;
 pub mod policy;
 pub mod profile;
 pub mod resolve;

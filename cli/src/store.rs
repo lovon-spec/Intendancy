@@ -20,13 +20,69 @@ pub fn default_state_dir() -> Result<PathBuf> {
     Ok(PathBuf::from(home).join(".intend"))
 }
 
+/// Where an atomic write failed: before the rename published the new file
+/// (the previous file is intact) or after it (the new contents are visible,
+/// their durability unconfirmed). Callers that promise "nothing changed" on
+/// failure must look at the phase before saying so.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WritePhase {
+    BeforePublish,
+    AfterPublish,
+}
+
+/// A failed atomic write with the phase it failed in.
+#[derive(Debug)]
+pub struct AtomicWriteFailure {
+    pub phase: WritePhase,
+    pub error: eyre::Report,
+}
+
+impl std::fmt::Display for AtomicWriteFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.phase {
+            WritePhase::BeforePublish => write!(f, "{:#} (before publication)", self.error),
+            WritePhase::AfterPublish => write!(
+                f,
+                "{:#} (after publication: the new contents are visible, durability unconfirmed)",
+                self.error
+            ),
+        }
+    }
+}
+
+impl std::error::Error for AtomicWriteFailure {}
+
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
+    atomic_write_phased(path, bytes).map_err(|f| f.error)
+}
+
+/// `atomic_write` reporting the phase of a failure.
+pub fn atomic_write_phased(
+    path: &Path,
+    bytes: &[u8],
+) -> std::result::Result<(), AtomicWriteFailure> {
+    atomic_write_with_sync(path, bytes, &|dir| {
+        std::fs::File::open(dir).and_then(|d| d.sync_all())
+    })
+}
+
+/// The write with the parent-directory fsync injectable, so the after-publish
+/// failure path is testable.
+pub fn atomic_write_with_sync(
+    path: &Path,
+    bytes: &[u8],
+    dir_sync: &dyn Fn(&Path) -> std::io::Result<()>,
+) -> std::result::Result<(), AtomicWriteFailure> {
     use std::io::Write;
+    let before = |error: eyre::Report| AtomicWriteFailure {
+        phase: WritePhase::BeforePublish,
+        error,
+    };
     let dir = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
-    std::fs::create_dir_all(dir)?;
+    std::fs::create_dir_all(dir).map_err(|e| before(e.into()))?;
     let tmp = dir.join(format!(
         ".tmp-{}-{}",
         std::process::id(),
@@ -39,8 +95,9 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
         .write(true)
         .create_new(true)
         .open(&tmp)
-        .wrap_err_with(|| format!("creating {}", tmp.display()))?;
-    let result = f
+        .wrap_err_with(|| format!("creating {}", tmp.display()))
+        .map_err(before)?;
+    let staged = f
         .write_all(bytes)
         .and_then(|()| f.sync_all())
         .map_err(eyre::Report::from)
@@ -48,18 +105,20 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
             drop(f);
             crate::failpoint("atomic-write-pre-rename");
             std::fs::rename(&tmp, path).wrap_err_with(|| format!("publishing {}", path.display()))
-        })
-        .and_then(|()| {
-            // Durability of the RENAME itself requires fsyncing the parent
-            // directory (review finding: atomic_write lacked parent fsync).
-            std::fs::File::open(dir)
-                .and_then(|d| d.sync_all())
-                .wrap_err_with(|| format!("fsync of parent dir {}", dir.display()))
         });
-    if result.is_err() {
+    if let Err(e) = staged {
         let _ = std::fs::remove_file(&tmp);
+        return Err(before(e));
     }
-    result
+    // Durability of the RENAME itself requires fsyncing the parent directory
+    // (review finding: atomic_write lacked parent fsync). From here on the new
+    // file is already published: a failure is reported as such.
+    dir_sync(dir)
+        .wrap_err_with(|| format!("fsync of parent dir {}", dir.display()))
+        .map_err(|error| AtomicWriteFailure {
+            phase: WritePhase::AfterPublish,
+            error,
+        })
 }
 
 /// Advisory interprocess lock (exclusive `flock`) serializing read-modify-write
@@ -361,5 +420,51 @@ impl Catalog {
         let snapshot: Snapshot = serde_json::from_slice(&raw)
             .wrap_err_with(|| format!("parsing {}", snap_path.display()))?;
         Ok(Self { meta, snapshot })
+    }
+}
+
+#[cfg(test)]
+mod atomic_write_tests {
+    use super::{atomic_write_with_sync, WritePhase};
+
+    #[test]
+    fn failure_phase_says_whether_the_new_file_was_published() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("lock.json");
+        std::fs::write(&path, b"old").unwrap();
+        // The parent fsync fails AFTER the rename: the new contents are
+        // visible and the failure says so.
+        let err = atomic_write_with_sync(&path, b"new", &|_| {
+            Err(std::io::Error::other("simulated fsync failure"))
+        })
+        .unwrap_err();
+        assert_eq!(err.phase, WritePhase::AfterPublish);
+        assert_eq!(std::fs::read(&path).unwrap(), b"new");
+        assert!(err.to_string().contains("after publication"), "{err}");
+        // A failure BEFORE the rename leaves the previous file intact: a
+        // parent directory that cannot be written into.
+        std::fs::write(&path, b"old").unwrap();
+        let sealed = tmp.path().join("sealed");
+        std::fs::create_dir(&sealed).unwrap();
+        let inner = sealed.join("lock.json");
+        std::fs::write(&inner, b"old").unwrap();
+        let mut perms = std::fs::metadata(&sealed).unwrap().permissions();
+        use std::os::unix::fs::PermissionsExt;
+        perms.set_mode(0o500);
+        std::fs::set_permissions(&sealed, perms).unwrap();
+        let result = atomic_write_with_sync(&inner, b"new", &|_| Ok(()));
+        let mut perms = std::fs::metadata(&sealed).unwrap().permissions();
+        perms.set_mode(0o700);
+        std::fs::set_permissions(&sealed, perms).unwrap();
+        match result {
+            // Root ignores directory permissions; the before-publish branch
+            // is then not reachable this way.
+            Ok(()) => assert_eq!(std::fs::read(&inner).unwrap(), b"new"),
+            Err(err) => {
+                assert_eq!(err.phase, WritePhase::BeforePublish);
+                assert_eq!(std::fs::read(&inner).unwrap(), b"old");
+                assert!(err.to_string().contains("before publication"), "{err}");
+            }
+        }
     }
 }

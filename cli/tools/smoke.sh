@@ -6,8 +6,9 @@
 # after every on-chain mutation so the quorum's min-finalized height advances.
 #
 # What this proves: the full verified lifecycle (update → install → audit →
-# revocation → re-registration → sticky re-enable) plus quorum plumbing with
-# distinct origins. What it does NOT prove: operator independence (both nodes
+# revocation → re-registration → sticky re-enable → policy-version transition
+# with `migrate`, including a quarantined tree migrating in a blocked state)
+# plus quorum plumbing with distinct origins. What it does NOT prove: operator independence (both nodes
 # are local; `anchor_operators` labels them honestly as two local instances),
 # or header-authenticated state roots (anvil fork headers carry ZERO state
 # roots — the profile sets the loudly-labeled test_headerless_state_root
@@ -145,6 +146,12 @@ set -e
 [ $rc -eq 1 ] || { echo "FATAL: sticky suspension must keep audit failing, got $rc"; exit 1; }
 ( cd "$work" && "$INTEND" "${P[@]}" enable ./skill )
 ( cd "$work" && "$INTEND" "${P[@]}" audit )
+echo "== a second install, then quarantined the way the bootstrap skill does (its own lockfile) =="
+( cd "$work" && "$INTEND" "${P[@]}" install kubo-interop-skill \
+    --dir ./skill2 --car "$here/fixtures/kubo/tree.car" --lockfile ./quarantine-lock.json )
+# One audit while intact, so the entry carries an audit record the migration must keep.
+( cd "$work" && "$INTEND" "${P[@]}" audit --lockfile ./quarantine-lock.json > /dev/null )
+mv "$work/skill2" "$work/quarantine-skill2"
 echo "== policy version and governor pins (owner decision 2026-09-06) =="
 # The governor (the deployer in mock mode) announces a new policy: the counter moves to 1.
 cast send $REG "changeMetaEvidence(string,string)" "/ipfs/$CID/registration-v1.json" "/ipfs/$CID/clearing-v1.json" --private-key $KEY --rpc-url $A --json > /dev/null
@@ -167,6 +174,61 @@ EOF
 P1=(--profile "$work/profile-v1.toml" --state-dir "$work/state-v1")
 "$INTEND" "${P1[@]}" update
 echo "profile naming version 1 verifies: ok"
+
+echo "== migrate: the old profile's entries are refused by the new one until carried across =="
+set +e
+( cd "$work" && "$INTEND" "${P1[@]}" audit > "$work/audit-v1-before.log" 2>&1 ); rc=$?
+set -e
+[ $rc -ne 0 ] || { echo "FATAL: the new profile must refuse old-context entries before migration"; cat "$work/audit-v1-before.log"; exit 1; }
+grep -q "intend migrate --from" "$work/audit-v1-before.log" || { echo "FATAL: the refusal must name the migration"; cat "$work/audit-v1-before.log"; exit 1; }
+echo "new profile refuses old-context entries and names the migration: ok"
+# The intact install migrates current; the new profile audits it; the old one no longer does.
+( cd "$work" && "$INTEND" "${P1[@]}" migrate --from "$work/profile.toml" > "$work/migrate.log" ); cat "$work/migrate.log"
+python3 - "$work/migrate.log" <<'EOF'
+import json, sys
+r = json.loads(open(sys.argv[1]).read().strip().splitlines()[-1])
+assert r["ok"] and r["migrated"] == 1 and r["skipped"] == 0 and r["states"]["current"] == 1, r
+assert r["states"]["entries"][0]["localIntegrity"] == "intact", r
+EOF
+( cd "$work" && "$INTEND" "${P1[@]}" audit )
+set +e
+( cd "$work" && "$INTEND" "${P[@]}" audit > "$work/audit-old-after.log" 2>&1 ); rc=$?
+set -e
+[ $rc -ne 0 ] || { echo "FATAL: the old profile must refuse migrated entries"; exit 1; }
+grep -q "intend migrate --from" "$work/audit-old-after.log" || { echo "FATAL: unexpected refusal text"; cat "$work/audit-old-after.log"; exit 1; }
+echo "migrated lockfile: new profile audits it (current), old profile refuses it: ok"
+# A second run is idempotent: everything is already at the new context.
+( cd "$work" && "$INTEND" "${P1[@]}" migrate --from "$work/profile.toml" > "$work/migrate-again.log" )
+python3 - "$work/migrate-again.log" <<'EOF'
+import json, sys
+r = json.loads(open(sys.argv[1]).read().strip().splitlines()[-1])
+assert r["ok"] and r["migrated"] == 0 and r["skipped"] == 1, r
+EOF
+echo "repeat migration skips entries already at the new context: ok"
+# The quarantined tree migrates in a blocked state: context and history move,
+# the bytes stay unauthorized, and audit keeps reporting it.
+( cd "$work" && "$INTEND" "${P1[@]}" migrate --from "$work/profile.toml" --lockfile ./quarantine-lock.json > "$work/migrate-q.log" ); cat "$work/migrate-q.log"
+python3 - "$work/migrate-q.log" <<'EOF'
+import json, sys
+r = json.loads(open(sys.argv[1]).read().strip().splitlines()[-1])
+assert r["ok"] and r["migrated"] == 1 and r["states"]["modified"] == 1, r
+e = r["states"]["entries"][0]
+assert e["state"] == "modified" and "missing" in e["localIntegrity"], e
+EOF
+set +e
+( cd "$work" && "$INTEND" "${P1[@]}" audit --lockfile ./quarantine-lock.json > "$work/audit-q.log" 2>&1 ); rc=$?
+set -e
+[ $rc -eq 1 ] || { echo "FATAL: a quarantined tree must keep audit failing, got $rc"; cat "$work/audit-q.log"; exit 1; }
+grep -q '"state":"modified"' "$work/audit-q.log" || grep -q '"state": "modified"' "$work/audit-q.log" || { echo "FATAL: audit must report the quarantined tree as modified"; cat "$work/audit-q.log"; exit 1; }
+python3 - "$work/quarantine-lock.json" <<'EOF'
+import json, sys
+lock = json.load(open(sys.argv[1]))
+e = lock["entries"][0]
+assert len(e["migrations"]) == 1 and "missing" in e["migrations"][0]["localIntegrity"], e
+assert e["migrations"][0]["previousAudit"]["state"] == "current", e["migrations"][0]
+assert len(e["files"]) > 0, "manifest preserved"
+EOF
+echo "quarantined tree migrates blocked (modified, missing), manifest and audit history kept: ok"
 # A governor switch fails closed under that profile until a release pins the new governor.
 ACCT1=0x70997970C51812dc3A010C7d01b50e0d17dc79C8
 KEY1=0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d
