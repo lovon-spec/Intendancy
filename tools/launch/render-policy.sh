@@ -17,7 +17,13 @@ CHROME=${CHROME:-"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"}
 if [ -z "${RENDER_SSH:-}" ] && { [ -z "$CHROME" ] || [ ! -x "$CHROME" ]; }; then
   echo "headless Chrome not found; set CHROME=/path/to/chrome or RENDER_SSH=user@host" >&2; exit 2
 fi
-TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
+TMP=$(mktemp -d); R=
+# Cleanup keeps the script's own exit status: the remote scratch directory is removed on a best-effort basis
+# with a warning, the local one always.
+cleanup() { rc=$?
+  if [ -n "$R" ]; then ssh "$RENDER_SSH" "rm -rf \"$R\"" >/dev/null 2>&1 || echo "warning: remote scratch directory $R on $RENDER_SSH was not removed" >&2; fi
+  rm -rf "$TMP"; exit $rc; }
+trap cleanup EXIT
 python3 - "$SRC" "$TMP/policy.html" <<'PY'
 import sys, markdown
 src = open(sys.argv[1], encoding="utf-8").read()
@@ -38,7 +44,6 @@ if [ -n "${RENDER_SSH:-}" ]; then
   # back, and the remote directory is removed whatever happens. Fonts follow that machine, so note the
   # renderer with the pinned file.
   R=$(ssh "$RENDER_SSH" 'mktemp -d "${TMPDIR:-/tmp}/render-policy.XXXXXX"') || { echo "remote mktemp failed" >&2; exit 1; }
-  trap 'ssh "$RENDER_SSH" "rm -rf \"$R\"" >/dev/null 2>&1; rm -rf "$TMP"' EXIT
   scp -q "$TMP/policy.html" "$RENDER_SSH:$R/policy.html" || { echo "remote copy failed" >&2; exit 1; }
   ssh "$RENDER_SSH" "cd \"$R\" && ${RENDER_CHROME:-chromium} --headless=new --disable-gpu --no-sandbox --no-first-run --user-data-dir=profile --no-pdf-header-footer --print-to-pdf=policy.pdf \"file://$R/policy.html\" >/dev/null 2>&1 && test -s policy.pdf" || { echo "remote renderer failed" >&2; exit 1; }
   scp -q "$RENDER_SSH:$R/policy.pdf" "$OUT" || { echo "remote copy back failed" >&2; exit 1; }
