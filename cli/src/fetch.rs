@@ -40,7 +40,10 @@ pub(crate) const H2_MAX_FRAME_BYTES: u32 = 1 << 14;
 pub(crate) fn http_client() -> Result<&'static reqwest::blocking::Client> {
     static CLIENT: std::sync::OnceLock<reqwest::blocking::Client> = std::sync::OnceLock::new();
     if CLIENT.get().is_none() {
+        // A User-Agent, because some gateways (eth.limo, observed 2026-09-09)
+        // refuse requests without one.
         let client = reqwest::blocking::Client::builder()
+            .user_agent(concat!("intend/", env!("CARGO_PKG_VERSION")))
             .http2_initial_stream_window_size(H2_STREAM_WINDOW_BYTES)
             .http2_initial_connection_window_size(H2_CONNECTION_WINDOW_BYTES)
             .http2_max_frame_size(H2_MAX_FRAME_BYTES)

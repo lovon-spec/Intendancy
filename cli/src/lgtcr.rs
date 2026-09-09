@@ -606,11 +606,15 @@ pub async fn prove_statuses(
 
 // ---------- content (IPFS blocks by hash) ----------
 
-/// Parse an item path: `/ipfs/<cid>[/segment...]`.
+/// Parse an item path. Lists carry three forms: `/ipfs/<cid>[/segment...]`
+/// (the common one), `ipfs://<cid>[/segment...]`, and, in early Address Tags
+/// submissions, a bare `<cid>`.
 pub fn parse_ipfs_path(path: &str) -> Result<(Cid, Vec<String>)> {
+    let path = path.trim();
     let rest = path
         .strip_prefix("/ipfs/")
-        .ok_or_else(|| eyre!("item path {path:?} is not /ipfs/…"))?;
+        .or_else(|| path.strip_prefix("ipfs://"))
+        .unwrap_or(path);
     let mut parts = rest.split('/');
     let cid = Cid::parse_any(parts.next().unwrap_or_default())
         .wrap_err_with(|| format!("item path {path:?}: CID"))?;
@@ -1429,7 +1433,10 @@ pub async fn fetch_all_files(
         set.spawn(async move {
             let _permit = sem.acquire_owned().await;
             let mut last = None;
-            for _ in 0..2 {
+            for attempt in 0..3u64 {
+                if attempt > 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(500 * attempt)).await;
+                }
                 match fetch_item_file(&gws, &path).await {
                     Ok(v) => return (id, Ok(v)),
                     Err(e) => last = Some(e),
@@ -1987,7 +1994,18 @@ mod tests {
             parse_ipfs_path("/ipfs/QmWtvA69pfnBbkJvLS3TAJuevnKdb35NbrvTDuARQszAAv/item.json")
                 .unwrap();
         assert_eq!(segs, vec!["item.json".to_string()]);
-        assert!(parse_ipfs_path("ipfs://QmWtvA69pfnBbkJvLS3TAJuevnKdb35NbrvTDuARQszAAv").is_err());
+        // Early Address Tags submissions carry a bare CID; ipfs:// also occurs.
+        let (bare, segs) =
+            parse_ipfs_path("QmWtvA69pfnBbkJvLS3TAJuevnKdb35NbrvTDuARQszAAv").unwrap();
+        assert_eq!((bare, segs.len()), (cid, 0));
+        let (scheme, _) =
+            parse_ipfs_path("ipfs://QmWtvA69pfnBbkJvLS3TAJuevnKdb35NbrvTDuARQszAAv/item.json")
+                .unwrap();
+        assert_eq!(scheme, cid);
+        assert!(parse_ipfs_path(
+            "https://example.invalid/QmWtvA69pfnBbkJvLS3TAJuevnKdb35NbrvTDuARQszAAv"
+        )
+        .is_err());
         assert!(
             parse_ipfs_path("/ipfs/QmWtvA69pfnBbkJvLS3TAJuevnKdb35NbrvTDuARQszAAv/../x").is_err()
         );
