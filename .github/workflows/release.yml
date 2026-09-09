@@ -81,7 +81,7 @@ jobs:
           cargo --version
 
       - name: Build
-        run: cargo build --release --locked --bin intend --target ${{ matrix.target }}
+        run: cargo build --release --locked --bin intend --bin curate-export --target ${{ matrix.target }}
 
       # One archive per target: `intend-<version>-<suffix>.tar.gz` carrying the
       # binary and the CLI README, executable bit preserved. The version is the
@@ -105,6 +105,15 @@ jobs:
           chmod 755 stage/intend
           cp README.md stage/README.md
           tar -C stage -czf "out/${name}.tar.gz" intend README.md
+          rm -rf stage
+          # The verified Curate-list exporter ships beside it, same layout:
+          # `curate-export-<version>-<suffix>.tar.gz`.
+          name="curate-export-${version}-${{ matrix.suffix }}"
+          mkdir -p stage
+          cp "target/${{ matrix.target }}/release/curate-export" stage/curate-export
+          chmod 755 stage/curate-export
+          cp README.md stage/README.md
+          tar -C stage -czf "out/${name}.tar.gz" curate-export README.md
           rm -rf stage
           ls -l out
 
@@ -285,7 +294,7 @@ jobs:
             echo
             echo "The \`intend\` CLI for the **Agent Skills Registry** on Gnosis Chain (chain ID 100): registry \`0x67DBE6A9597635074546e08B92eE617bF02168f9\`, governor the timelock \`0xc8Ba4c0AD3554EDB0a9A4C8D73Bf87410A313ADa\`. The profile that pins them ships as \`agent-skills-registry.toml\`."
             echo
-            echo "**Assets.** One \`intend-${version}-<target>.tar.gz\` per target (linux-x86_64, linux-aarch64, macos-aarch64, macos-x86_64), \`agent-skills-registry.toml\`, \`SHA256SUMS\`, and a detached \`.asc\` PGP signature for each of them. The public key is \`RELEASE-SIGNING-KEY.asc\`, the same key that signs Intendant's releases (fingerprint \`$PGP_FINGERPRINT\`); it is also committed at the root of this repository."
+            echo "**Assets.** One \`intend-${version}-<target>.tar.gz\` and one \`curate-export-${version}-<target>.tar.gz\` per target (linux-x86_64, linux-aarch64, macos-aarch64, macos-x86_64), \`agent-skills-registry.toml\`, \`SHA256SUMS\`, and a detached \`.asc\` PGP signature for each of them. The public key is \`RELEASE-SIGNING-KEY.asc\`, the same key that signs Intendant's releases (fingerprint \`$PGP_FINGERPRINT\`); it is also committed at the root of this repository."
             echo
             echo "**Verify before use.**"
             echo '```'

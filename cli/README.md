@@ -50,6 +50,36 @@ gpg --verify agent-skills-registry.toml.asc agent-skills-registry.toml
 
 `skills/intendancy/` at the repository root is a skill that teaches an agent to use the registry: `scripts/install-intend.sh` installs the CLI and the profile from a signed release with every artifact verified against the pinned release key, and `SKILL.md` covers update, catalog, install and audit, including how to read the anchor mode. An agent gets its first copy from this repository; once the skill is listed in the registry, updates arrive through the same verified path as every other skill.
 
+## Verified exports of Curate lists
+
+`curate-export`, a second binary in this crate, snapshots a Kleros **Light** Curate list from the chain itself, so that curators and integrators can rely on a file they can rerun and compare instead of an indexer or a published export. The four Kleros Scout registries on Gnosis are presets (`--registry tokens|address-tags|atq|cdn`); any other Light list works with `--list`, `--items-slot` and `--chain-id`/`--genesis`.
+
+What it proves, and what it does not:
+
+- **Membership and status are proven.** A Light list keeps `items[itemID]` in storage; the export proves every candidate's status slot with `eth_getProof` at a header-quorum anchor, verified against the anchor's state root by the same MPT verifier `intend` uses.
+- **Content is bound.** `itemID` is the keccak of the item's IPFS path, and the item file is fetched as IPFS blocks whose bytes must hash to the CID, from the gateways in order.
+- **Completeness rests on logs.** A Light list has no item list in storage; candidates come from `NewItem` logs, so the export takes them from at least two independently operated RPCs and requires the sets to agree. An item both sources hide is invisible. The provenance file says so, and the anchor is the header quorum this crate labels an alpha mode.
+
+```sh
+cargo build --release --bin curate-export
+B=target/release/curate-export
+
+# 1. A registry-agnostic snapshot: items.json (+ CSV), provenance.json.
+$B export --registry address-tags --out items.json --provenance provenance.json --csv items.csv
+$B export --registry tokens --include-pending    # also the entries under review, for challengers
+
+# 2. Offline queries over the snapshot: is this address already tagged? which entries mention this domain?
+$B lookup --items items.json --address 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48
+$B lookup --items items.json --value kleros.io --status 1
+
+# 3. The Tokens list as a Uniswap-schema token list, with a diff against the discontinued export.
+$B tokenlist --items tokens-items.json --compare https://t2crtokens.eth.limo/ --out tokens.json --diff-out diff.json
+```
+
+`items.json` carries, per item, the item id, the status (name and number), the IPFS path, and the item file's `columns` and `values` verbatim, sorted by item id; statuses Registered and ClearingRequested by default, `--include-pending` adds RegistrationRequested, `--all` adds Absent with only the path its log carried. `tokenlist` reads that snapshot (or runs the export itself when given the source flags): rich addresses become chain id and EIP-55 address, decimals are validated, logos become `ipfs://` URIs, the output is deterministic, `--previous` applies token-lists versioning and `--compare` writes a diff. `provenance.json` records the anchor, every source, the block range, the status histogram, every skipped item with its reason, the RPC call count and the sha256 of the output. `tools/smoke-curate-export.sh` runs all of it against the live registries.
+
+To publish a snapshot or a token list: pin it with `tools/launch/car-of.sh --wrap` and `pin-filebase.sh`, or any pinning service, and hand out the CID with the provenance file. Anyone who distrusts the publisher reruns the command and compares.
+
 ## The production profile
 
 `profiles/agent-skills-registry.toml` is the deployment manifest for the Agent Skills Registry on Gnosis (registry `0x67DBE6A9597635074546e08B92eE617bF02168f9`, governor the timelock `0xc8Ba4c0AD3554EDB0a9A4C8D73Bf87410A313ADa`, court 19 with three jurors, the two MetaEvidence references the deployment emitted). It ships as a release asset and is verified before use. First verified against the live chain on 2026-09-07: header quorum from two operators, complete enumeration proven, an empty catalog.

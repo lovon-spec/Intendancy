@@ -63,9 +63,32 @@ fn provider_for(rpc: &str) -> Result<impl Provider + Clone> {
     crate::transport::capped_provider(rpc)
 }
 
+/// The chain identity every source is authenticated against: chain id and
+/// genesis hash (spec §7). A profile carries one; tools that pin a chain
+/// without a registry profile (the Light Curate export) build one directly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChainPin {
+    pub chain_id: u64,
+    pub genesis_hash: B256,
+}
+
+impl From<&Profile> for ChainPin {
+    fn from(p: &Profile) -> Self {
+        Self {
+            chain_id: p.chain_id,
+            genesis_hash: p.genesis_hash,
+        }
+    }
+}
+
 /// Authenticate one RPC source against the pinned chain identity: chainId and
 /// genesis hash (spec §7). Used for anchor sources AND proof RPCs.
 pub async fn authenticate_source(rpc: &str, profile: &Profile) -> Result<()> {
+    authenticate_source_pin(rpc, &ChainPin::from(profile)).await
+}
+
+/// `authenticate_source` against a bare chain pin.
+pub async fn authenticate_source_pin(rpc: &str, pin: &ChainPin) -> Result<()> {
     let provider = provider_for(rpc)?;
     let chain_id = with_deadline(&format!("{rpc} eth_chainId"), async {
         provider
@@ -74,10 +97,10 @@ pub async fn authenticate_source(rpc: &str, profile: &Profile) -> Result<()> {
             .map_err(|e| eyre!("{rpc}: {e}"))
     })
     .await?;
-    if chain_id != profile.chain_id {
+    if chain_id != pin.chain_id {
         bail!(
             "{rpc}: serves chainId {chain_id}, profile pins {} — wrong chain",
-            profile.chain_id
+            pin.chain_id
         );
     }
     // The genesis check is a pure IDENTITY pin: the reported hash must equal
@@ -102,11 +125,11 @@ pub async fn authenticate_source(rpc: &str, profile: &Profile) -> Result<()> {
     })
     .await?;
     let reported = genesis_hash_from_json(&genesis).map_err(|e| eyre!("{rpc}: {e}"))?;
-    if reported != profile.genesis_hash {
+    if reported != pin.genesis_hash {
         bail!(
             "{rpc}: genesis hash {} != pinned {} — wrong chain or tampered source",
             reported,
-            profile.genesis_hash
+            pin.genesis_hash
         );
     }
     Ok(())
@@ -186,20 +209,24 @@ fn check_time_bounds(timestamp: u64) -> Result<()> {
 /// reports, then require every source to serve an identical authenticated
 /// header (hash, stateRoot, timestamp) at that height.
 pub async fn finalized_quorum(profile: &Profile) -> Result<QuorumAnchor> {
-    let rpcs = &profile.anchor_rpcs;
+    finalized_quorum_rpcs(&profile.anchor_rpcs, &ChainPin::from(profile)).await
+}
+
+/// `finalized_quorum` over an explicit source list and a bare chain pin.
+pub async fn finalized_quorum_rpcs(rpcs: &[String], pin: &ChainPin) -> Result<QuorumAnchor> {
     if rpcs.len() < 2 {
         bail!("header quorum needs at least 2 RPC endpoints");
     }
     let mut min_number = u64::MAX;
     for rpc in rpcs {
-        authenticate_source(rpc, profile).await?;
+        authenticate_source_pin(rpc, pin).await?;
         let (number, _, _, _) = authenticated_header(rpc, BlockId::finalized()).await?;
         min_number = min_number.min(number);
     }
     if min_number == u64::MAX || min_number == 0 {
         bail!("no usable finalized height from quorum sources");
     }
-    let (hash, state_root, timestamp) = quorum_at_inner(profile, min_number, false).await?;
+    let (hash, state_root, timestamp) = quorum_at_rpcs(rpcs, pin, min_number, false).await?;
     check_time_bounds(timestamp)?;
     Ok(QuorumAnchor {
         block_number: min_number,
@@ -215,22 +242,22 @@ pub async fn finalized_quorum(profile: &Profile) -> Result<QuorumAnchor> {
 /// authenticated (hash, stateRoot, timestamp) for that height, and the height
 /// must be at or below every source's finalized head.
 pub async fn quorum_at(profile: &Profile, number: u64) -> Result<(B256, B256, u64)> {
-    quorum_at_inner(profile, number, true).await
+    quorum_at_rpcs(&profile.anchor_rpcs, &ChainPin::from(profile), number, true).await
 }
 
-async fn quorum_at_inner(
-    profile: &Profile,
+async fn quorum_at_rpcs(
+    rpcs: &[String],
+    pin: &ChainPin,
     number: u64,
     authenticate: bool,
 ) -> Result<(B256, B256, u64)> {
-    let rpcs = &profile.anchor_rpcs;
     if rpcs.len() < 2 {
         bail!("header quorum needs at least 2 RPC endpoints");
     }
     let mut agreed: Option<(B256, B256, u64)> = None;
     for rpc in rpcs {
         if authenticate {
-            authenticate_source(rpc, profile).await?;
+            authenticate_source_pin(rpc, pin).await?;
         }
         let (fin_number, _, _, _) = authenticated_header(rpc, BlockId::finalized()).await?;
         if number > fin_number {

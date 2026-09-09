@@ -7,6 +7,7 @@ pub mod anchor;
 pub mod car;
 pub mod chain;
 pub mod fetch;
+pub mod lgtcr;
 pub mod lockfile;
 pub mod migrate;
 pub mod policy;
