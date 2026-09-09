@@ -20,12 +20,13 @@ shift $(( $# - 2 )); src=${1#*:}; dst=${2#*:}; cp "$src" "$dst"
 FAKE
 chmod +x "$BIN/ssh" "$BIN/scp"
 pass=0; fail=0; n=0
-run() { n=$((n+1)); OUT="$WORK/out$n.pdf"; export FAKE_REMOTE="$WORK/remote$n"; mkdir -p "$FAKE_REMOTE"
-  PATH="$BIN:$PY:/usr/bin:/bin" CHROME="/nonexistent/chrome" RENDER_SSH="$1" "$HERE/render-policy.sh" "$OUT" >/dev/null 2>"$OUT.err"; echo $?; }
-check() { if [ "$1" = "$2" ]; then echo "ok   $3"; pass=$((pass+1)); else echo "FAIL $3 (got $1, want $2): $(tail -1 "$OUT.err")"; fail=$((fail+1)); fi; }
-rc=$(run ""); check "$rc" 2 "local mode without a usable Chrome refuses at preflight"
-rc=$(FAKE_MKTEMP_FAIL=1 run "fixture@remote"); [ "$rc" = 1 ] && grep -q 'remote mktemp failed' "$OUT.err"; check "$?" 0 "remote mode passes preflight without a local Chrome and fails at ssh"
-rc=$(run "fixture@remote"); [ "$rc" = 0 ] && head -c 5 "$OUT" | grep -q '%PDF-'; check "$?" 0 "remote render succeeds and the PDF comes back"
-rc=$(FAKE_RENDER_FAIL=1 run "fixture@remote"); [ "$rc" = 1 ] && [ ! -s "$OUT" ] && grep -q 'remote renderer failed' "$OUT.err"; check "$?" 0 "a failing remote renderer is a failure with no PDF accepted"
-rc=$(FAKE_RM_EXIT=74 run "fixture@remote"); [ "$rc" = 0 ] && head -c 5 "$OUT" | grep -q '%PDF-' && grep -q 'was not removed' "$OUT.err"; check "$?" 0 "a failing remote cleanup keeps the result and warns"
+# run <RENDER_SSH> [VAR=value ...]: runs the script in the parent shell and leaves RC and OUT set.
+run() { n=$((n+1)); OUT="$WORK/out$n.pdf"; export FAKE_REMOTE="$WORK/remote$n"; mkdir -p "$FAKE_REMOTE"; remote=$1; shift
+  env "$@" PATH="$BIN:$PY:/usr/bin:/bin" CHROME="/nonexistent/chrome" RENDER_SSH="$remote" "$HERE/render-policy.sh" "$OUT" >/dev/null 2>"$OUT.err"; RC=$?; }
+check() { if [ "$1" = 0 ]; then echo "ok   $2"; pass=$((pass+1)); else echo "FAIL $2 (exit $RC): $(tail -1 "$OUT.err")"; fail=$((fail+1)); fi; }
+run ""; [ "$RC" = 2 ]; check $? "local mode without a usable Chrome refuses at preflight"
+run "fixture@remote" FAKE_MKTEMP_FAIL=1; [ "$RC" = 1 ] && grep -q 'remote mktemp failed' "$OUT.err"; check $? "remote mode passes preflight without a local Chrome and fails at ssh"
+run "fixture@remote"; [ "$RC" = 0 ] && head -c 5 "$OUT" | grep -q '%PDF-'; check $? "remote render succeeds and the PDF comes back"
+run "fixture@remote" FAKE_RENDER_FAIL=1; [ "$RC" = 1 ] && [ ! -s "$OUT" ] && grep -q 'remote renderer failed' "$OUT.err"; check $? "a failing remote renderer is a failure with no PDF accepted"
+run "fixture@remote" FAKE_RM_EXIT=74; [ "$RC" = 0 ] && head -c 5 "$OUT" | grep -q '%PDF-' && grep -q 'was not removed' "$OUT.err"; check $? "a failing remote cleanup keeps the result and warns"
 echo "$pass passed, $fail failed"; [ "$fail" = 0 ]
