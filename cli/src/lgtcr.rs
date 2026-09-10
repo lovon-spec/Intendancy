@@ -1575,6 +1575,130 @@ pub struct TokenList {
     pub tokens: Vec<Token>,
 }
 
+/// The default list name. The Uniswap schema's `properties.name` is
+/// `^[\w ]+$` (ASCII letters, digits, underscore, space), 1 to 30
+/// characters: no comma, no hyphen.
+pub const DEFAULT_LIST_NAME: &str = "Kleros Tokens Verified";
+
+/// Limits the Uniswap token-list schema states (vendored, pinned, in
+/// `fixtures/uniswap/`; `schema_checks_match_the_vendored_schema` holds
+/// these to that file).
+pub const LIST_NAME_MIN_CHARS: usize = 1;
+pub const LIST_NAME_MAX_CHARS: usize = 30;
+pub const TOKEN_NAME_MAX_CHARS: usize = 60;
+pub const TOKEN_SYMBOL_MAX_CHARS: usize = 20;
+pub const TOKENS_MIN: usize = 1;
+pub const TOKENS_MAX: usize = 10_000;
+
+/// The schema's list name: `^[\w ]+$`, 1 to 30 characters.
+pub fn validate_list_name(name: &str) -> Result<()> {
+    let n = name.chars().count();
+    if !(LIST_NAME_MIN_CHARS..=LIST_NAME_MAX_CHARS).contains(&n) {
+        bail!(
+            "token-list name {name:?} must be {LIST_NAME_MIN_CHARS} to {LIST_NAME_MAX_CHARS} characters (schema properties.name)"
+        );
+    }
+    if let Some(c) = name
+        .chars()
+        .find(|c| !(c.is_ascii_alphanumeric() || *c == '_' || *c == ' '))
+    {
+        bail!(
+            "token-list name {name:?} contains {c:?}; the schema allows ASCII letters, digits, underscore and space (^[\\w ]+$)"
+        );
+    }
+    Ok(())
+}
+
+/// The schema's TokenInfo checks over one token: a positive chainId, an
+/// EVM address (`0x` and 40 hex digits; this export emits no other form),
+/// decimals 0 to 255 (held by the type), a name of 1 to 60 characters with
+/// no whitespace other than spaces (`^[ \S+]+$`), a symbol of 1 to 20
+/// characters with no whitespace (`^\S+$`). The schema also admits an empty
+/// name or symbol; this export does not.
+pub fn validate_token(t: &Token) -> Result<()> {
+    if t.chain_id < 1 {
+        bail!("chainId {} is not positive", t.chain_id);
+    }
+    let hex = t.address.strip_prefix("0x").unwrap_or_default();
+    if hex.len() != 40 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        bail!("address {:?} is not 0x and 40 hex digits", t.address);
+    }
+    let name_chars = t.name.chars().count();
+    if name_chars == 0 || name_chars > TOKEN_NAME_MAX_CHARS {
+        bail!(
+            "name {:?} must be 1 to {TOKEN_NAME_MAX_CHARS} characters",
+            t.name
+        );
+    }
+    if let Some(c) = t.name.chars().find(|c| c.is_whitespace() && *c != ' ') {
+        bail!(
+            "name {:?} contains whitespace {c:?} other than a space",
+            t.name
+        );
+    }
+    let symbol_chars = t.symbol.chars().count();
+    if symbol_chars == 0 || symbol_chars > TOKEN_SYMBOL_MAX_CHARS {
+        bail!(
+            "symbol {:?} must be 1 to {TOKEN_SYMBOL_MAX_CHARS} characters",
+            t.symbol
+        );
+    }
+    if let Some(c) = t.symbol.chars().find(|c| c.is_whitespace()) {
+        bail!("symbol {:?} contains whitespace {c:?}", t.symbol);
+    }
+    Ok(())
+}
+
+/// `YYYY-MM-DDTHH:MM:SSZ`, the RFC 3339 UTC form `rfc3339` writes (the
+/// schema's `date-time`).
+pub fn validate_timestamp(ts: &str) -> Result<()> {
+    let b = ts.as_bytes();
+    let shape = b.len() == 20
+        && b[4] == b'-'
+        && b[7] == b'-'
+        && b[10] == b'T'
+        && b[13] == b':'
+        && b[16] == b':'
+        && b[19] == b'Z'
+        && [0, 1, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18]
+            .iter()
+            .all(|i| b[*i].is_ascii_digit());
+    if !shape {
+        bail!("timestamp {ts:?} is not YYYY-MM-DDTHH:MM:SSZ");
+    }
+    let num = |a: usize, z: usize| ts[a..z].parse::<u32>().unwrap_or(u32::MAX);
+    let (month, day, hour, minute, second) =
+        (num(5, 7), num(8, 10), num(11, 13), num(14, 16), num(17, 19));
+    if !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+        || hour > 23
+        || minute > 59
+        || second > 59
+    {
+        bail!("timestamp {ts:?} has a field out of range");
+    }
+    Ok(())
+}
+
+/// The rendered list against the schema's checks: the name, the timestamp,
+/// non-negative version integers (held by the type), 1 to 10000 tokens,
+/// every token valid. Run before the list is written; a failure is a bug in
+/// the rendering, not a property of the data.
+pub fn validate_token_list(list: &TokenList) -> Result<()> {
+    validate_list_name(&list.name)?;
+    validate_timestamp(&list.timestamp)?;
+    if !(TOKENS_MIN..=TOKENS_MAX).contains(&list.tokens.len()) {
+        bail!(
+            "{} tokens; the schema allows {TOKENS_MIN} to {TOKENS_MAX}",
+            list.tokens.len()
+        );
+    }
+    for (i, t) in list.tokens.iter().enumerate() {
+        validate_token(t).wrap_err_with(|| format!("token {i} ({}:{})", t.chain_id, t.address))?;
+    }
+    Ok(())
+}
+
 /// A rejected item and why.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Skipped {
@@ -1652,14 +1776,16 @@ pub fn token_from_values(
         }
         _ => None,
     };
-    Ok(Token {
+    let token = Token {
         chain_id,
         address: address.to_checksum(None),
         name,
         symbol,
         decimals: decimals as u8,
         logo_uri,
-    })
+    };
+    validate_token(&token)?;
+    Ok(token)
 }
 
 /// Sort tokens into their canonical order: (chainId, lowercase address).
@@ -2573,6 +2699,137 @@ mod tests {
         let mut num = v.clone();
         num.insert("Decimals".into(), serde_json::json!(18));
         assert_eq!(token_from_values(&num, "ipfs://").unwrap().decimals, 18);
+        // TokenInfo constraints: skipped with the reason, never emitted.
+        let mut bad = v.clone();
+        bad.insert("Symbol".into(), serde_json::json!("US DC"));
+        assert!(token_from_values(&bad, "ipfs://")
+            .unwrap_err()
+            .to_string()
+            .contains("whitespace"));
+        let mut bad = v.clone();
+        bad.insert("Name".into(), serde_json::json!("a\tb"));
+        assert!(token_from_values(&bad, "ipfs://")
+            .unwrap_err()
+            .to_string()
+            .contains("whitespace"));
+        let mut bad = v.clone();
+        bad.insert("Name".into(), serde_json::json!("n".repeat(61)));
+        assert!(token_from_values(&bad, "ipfs://")
+            .unwrap_err()
+            .to_string()
+            .contains("1 to 60"));
+        let mut bad = v.clone();
+        bad.insert("Symbol".into(), serde_json::json!("S".repeat(21)));
+        assert!(token_from_values(&bad, "ipfs://").is_err());
+        let mut bad = v.clone();
+        bad.insert(
+            "Address".into(),
+            serde_json::json!("eip155:0:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"),
+        );
+        assert!(token_from_values(&bad, "ipfs://")
+            .unwrap_err()
+            .to_string()
+            .contains("not positive"));
+    }
+
+    #[test]
+    fn default_rendering_passes_the_schema_checks() {
+        validate_list_name(DEFAULT_LIST_NAME).unwrap();
+        let old = validate_list_name("Kleros Tokens, verified export").unwrap_err();
+        assert!(old.to_string().contains("','"), "{old}");
+        assert!(validate_list_name("").is_err());
+        assert!(validate_list_name(&"n".repeat(31)).is_err());
+        assert!(validate_list_name("Kleros-Tokens").is_err());
+        assert!(validate_list_name("Kleros_Tokens 2").is_ok());
+
+        let v: serde_json::Map<String, serde_json::Value> = serde_json::from_str(
+            r#"{"Address":"eip155:1:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48","Name":"USD Coin","Symbol":"USDC","Decimals":"6","Logo":"/ipfs/QmLogo/usdc.png"}"#,
+        )
+        .unwrap();
+        let t = token_from_values(&v, "ipfs://").unwrap();
+        let list = TokenList {
+            name: DEFAULT_LIST_NAME.into(),
+            timestamp: rfc3339(1_788_817_292),
+            version: bump_version(None, std::slice::from_ref(&t)),
+            tokens: vec![t],
+        };
+        validate_token_list(&list).unwrap();
+        // The bytes written pass too.
+        let back: TokenList = serde_json::from_slice(&serialize_list(&list).unwrap()).unwrap();
+        validate_token_list(&back).unwrap();
+        let mut bad = list.clone();
+        bad.name = "Kleros Tokens, verified export".into();
+        assert!(validate_token_list(&bad).is_err());
+        let mut bad = list.clone();
+        bad.tokens.clear();
+        assert!(validate_token_list(&bad).is_err());
+        let mut bad = list.clone();
+        bad.timestamp = "2026-09-07 21:41:32".into();
+        assert!(validate_token_list(&bad).is_err());
+        let mut bad = list.clone();
+        bad.timestamp = "2026-13-07T21:41:32Z".into();
+        assert!(validate_token_list(&bad).is_err());
+        let mut bad = list.clone();
+        bad.tokens[0].chain_id = 0;
+        assert!(validate_token_list(&bad).is_err());
+        let mut bad = list.clone();
+        bad.tokens[0].symbol = "US DC".into();
+        assert!(validate_token_list(&bad).is_err());
+        let mut bad = list.clone();
+        bad.tokens[0].name = "a\u{a0}b".into();
+        assert!(
+            validate_token_list(&bad).is_err(),
+            "NBSP is whitespace to \\S"
+        );
+        let mut bad = list.clone();
+        bad.tokens[0].name = "x".repeat(61);
+        assert!(validate_token_list(&bad).is_err());
+        let mut bad = list;
+        bad.tokens[0].address = "0x1234".into();
+        assert!(validate_token_list(&bad).is_err());
+    }
+
+    /// The vendored schema (fixtures/uniswap/tokenlist.schema.json, MIT,
+    /// pinned in PROVENANCE.txt) is what the constants above encode; a drift
+    /// fails here.
+    #[test]
+    fn schema_checks_match_the_vendored_schema() {
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../fixtures/uniswap/tokenlist.schema.json"))
+                .unwrap();
+        let name = &schema["properties"]["name"];
+        assert_eq!(name["pattern"], "^[\\w ]+$");
+        assert_eq!(name["minLength"], LIST_NAME_MIN_CHARS);
+        assert_eq!(name["maxLength"], LIST_NAME_MAX_CHARS);
+        assert_eq!(schema["properties"]["timestamp"]["format"], "date-time");
+        let tokens = &schema["properties"]["tokens"];
+        assert_eq!(tokens["minItems"], TOKENS_MIN);
+        assert_eq!(tokens["maxItems"], TOKENS_MAX);
+        assert_eq!(
+            schema["required"],
+            serde_json::json!(["name", "timestamp", "version", "tokens"])
+        );
+        let version = &schema["definitions"]["Version"]["properties"];
+        for field in ["major", "minor", "patch"] {
+            assert_eq!(version[field]["type"], "integer");
+            assert_eq!(version[field]["minimum"], 0);
+        }
+        let info = &schema["definitions"]["TokenInfo"]["properties"];
+        assert_eq!(info["chainId"]["minimum"], 1);
+        assert!(info["address"]["pattern"]
+            .as_str()
+            .unwrap()
+            .contains("0x[a-fA-F0-9]{40}"));
+        assert_eq!(info["decimals"]["minimum"], 0);
+        assert_eq!(info["decimals"]["maximum"], 255);
+        assert_eq!(info["name"]["maxLength"], TOKEN_NAME_MAX_CHARS);
+        assert_eq!(info["name"]["anyOf"][1]["pattern"], "^[ \\S+]+$");
+        assert_eq!(info["symbol"]["maxLength"], TOKEN_SYMBOL_MAX_CHARS);
+        assert_eq!(info["symbol"]["anyOf"][1]["pattern"], "^\\S+$");
+        assert_eq!(
+            schema["definitions"]["TokenInfo"]["required"],
+            serde_json::json!(["chainId", "address", "decimals", "name", "symbol"])
+        );
     }
 
     #[test]

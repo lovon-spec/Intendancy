@@ -195,7 +195,9 @@ struct TokenlistArgs {
     /// Prefix for logo URIs (the item's /ipfs/ path follows).
     #[arg(long, default_value = "ipfs://")]
     logo_base: String,
-    #[arg(long, default_value = "Kleros Tokens, verified export")]
+    /// The list's name (the token-lists schema allows ASCII letters, digits,
+    /// underscore and space, 1 to 30 characters).
+    #[arg(long, default_value = lgtcr::DEFAULT_LIST_NAME)]
     name: String,
     #[arg(long, default_value = "tokens.json")]
     out: PathBuf,
@@ -336,6 +338,9 @@ async fn export(a: ExportArgs) -> Result<()> {
 }
 
 async fn tokenlist(a: TokenlistArgs) -> Result<()> {
+    // Before any network or file work: a name the schema rejects would
+    // waste the export.
+    lgtcr::validate_list_name(&a.name).wrap_err("--name")?;
     let snapshot: ListSnapshot = match &a.items {
         Some(path) => {
             let bytes =
@@ -367,8 +372,10 @@ async fn tokenlist(a: TokenlistArgs) -> Result<()> {
         name: a.name.clone(),
         timestamp: lgtcr::rfc3339(snapshot.anchor.timestamp),
         version: lgtcr::bump_version(previous.as_ref(), &tokens),
-        tokens: tokens.clone(),
+        tokens,
     };
+    lgtcr::validate_token_list(&list_out)
+        .wrap_err("the rendered list fails the token-list schema checks; nothing written")?;
     let bytes = lgtcr::serialize_list(&list_out)?;
     intend::store::atomic_write(&a.out, &bytes)?;
     if let Some(path) = &a.skipped_out {
@@ -390,7 +397,7 @@ async fn tokenlist(a: TokenlistArgs) -> Result<()> {
             std::fs::read(reference).wrap_err_with(|| format!("--compare {reference}"))?
         };
         let theirs = lgtcr::parse_reference_list(&ref_bytes)?;
-        let diff = lgtcr::diff_lists(&tokens, &theirs);
+        let diff = lgtcr::diff_lists(&list_out.tokens, &theirs);
         let mut diff_bytes = serde_json::to_vec_pretty(&diff)?;
         diff_bytes.push(b'\n');
         intend::store::atomic_write(&a.diff_out, &diff_bytes)?;
@@ -414,7 +421,8 @@ async fn tokenlist(a: TokenlistArgs) -> Result<()> {
             "ok": true,
             "anchorBlock": snapshot.anchor.number,
             "anchorMode": snapshot.anchor.mode,
-            "tokens": tokens.len(),
+            "name": list_out.name,
+            "tokens": list_out.tokens.len(),
             "skipped": skipped.len(),
             "skipReasons": skip_reasons,
             "skippedOut": a.skipped_out.as_ref().map(|p| p.display().to_string()),
