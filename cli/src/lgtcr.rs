@@ -630,32 +630,76 @@ pub fn parse_ipfs_path(path: &str) -> Result<(Cid, Vec<String>)> {
     Ok((cid, segments))
 }
 
-/// One verified block: fetched from the gateways in order until one serves
-/// bytes that hash to the CID.
-async fn fetch_block(gateways: &[String], cid: Cid) -> Result<Vec<u8>> {
+/// Request deadline for one block: item files are a few KiB.
+pub const BLOCK_FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Gateways with a per-run health score: a failure adds a penalty, a success
+/// clears it, and every block tries the gateways in order of least penalty, so
+/// a stalled gateway stops costing every item its timeout.
+#[derive(Debug, Default)]
+pub struct Gateways {
+    urls: Vec<String>,
+    penalties: std::sync::Mutex<Vec<u32>>,
+}
+
+impl Gateways {
+    pub fn new(urls: &[String]) -> Self {
+        Self {
+            urls: urls.to_vec(),
+            penalties: std::sync::Mutex::new(vec![0; urls.len()]),
+        }
+    }
+
+    fn ordered(&self) -> Vec<usize> {
+        let p = self.penalties.lock().unwrap_or_else(|e| e.into_inner());
+        let mut idx: Vec<usize> = (0..self.urls.len()).collect();
+        idx.sort_by_key(|i| (p[*i], *i));
+        idx
+    }
+
+    fn report(&self, i: usize, ok: bool) {
+        let mut p = self.penalties.lock().unwrap_or_else(|e| e.into_inner());
+        p[i] = if ok { 0 } else { p[i].saturating_add(1) };
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.urls.is_empty()
+    }
+}
+
+/// One verified block: fetched from the gateways, healthiest first, until one
+/// serves bytes that hash to the CID.
+async fn fetch_block(gateways: &Gateways, cid: Cid) -> Result<Vec<u8>> {
     let text = if cid.codec == 0x70 {
         cid.to_string_v0()?
     } else {
         cid.to_string_canonical()
     };
     let mut errors = Vec::new();
-    for gw in gateways {
+    for i in gateways.ordered() {
+        let gw = &gateways.urls[i];
         let url = format!("{}/ipfs/{text}?format=raw", gw.trim_end_matches('/'));
-        match crate::fetch::fetch_bounded(
+        match crate::fetch::fetch_bounded_timeout(
             &url,
             car::MAX_BLOCK_BYTES as u64,
             Some("application/vnd.ipld.raw"),
+            BLOCK_FETCH_TIMEOUT,
         )
         .await
         {
             Ok(bytes) => {
                 let digest: [u8; 32] = Sha256::digest(&bytes).into();
                 if digest == cid.digest {
+                    gateways.report(i, true);
                     return Ok(bytes);
                 }
+                gateways.report(i, false);
                 errors.push(format!("{gw}: block bytes do not hash to {text}"));
             }
-            Err(e) => errors.push(format!("{gw}: {e:#}")),
+            Err(e) => {
+                gateways.report(i, false);
+                errors.push(format!("{gw}: {e:#}"));
+            }
         }
     }
     bail!("no gateway served block {text}: {}", errors.join("; "))
@@ -665,7 +709,7 @@ async fn fetch_block(gateways: &[String], cid: Cid) -> Result<Vec<u8>> {
 /// a dag-pb file (inline or chunked), or a directory walked by name. Every
 /// block is hash-verified; total size is bounded by `MAX_ITEM_BYTES`.
 pub async fn fetch_item_bytes(
-    gateways: &[String],
+    gateways: &Gateways,
     cid: Cid,
     segments: &[String],
 ) -> Result<Vec<u8>> {
@@ -729,7 +773,7 @@ pub struct ItemFile {
     pub values: serde_json::Map<String, serde_json::Value>,
 }
 
-pub async fn fetch_item_file(gateways: &[String], path: &str) -> Result<ItemFile> {
+pub async fn fetch_item_file(gateways: &Gateways, path: &str) -> Result<ItemFile> {
     let (cid, segments) = parse_ipfs_path(path)?;
     let bytes = fetch_item_bytes(gateways, cid, &segments).await?;
     let json: serde_json::Value = serde_json::from_slice(&bytes).wrap_err("item JSON")?;
@@ -1275,7 +1319,12 @@ pub async fn export_list(
         wanted.len(),
         cfg.gateways.len()
     ));
-    let fetched = fetch_all_files(Arc::new(cfg.gateways.clone()), wanted, cfg.concurrency).await;
+    let fetched = fetch_all_files(
+        Arc::new(Gateways::new(&cfg.gateways)),
+        wanted,
+        cfg.concurrency,
+    )
+    .await;
     let mut items = Vec::new();
     let mut fetch_failures = 0u64;
     for (id, path) in &enumeration.items {
@@ -1421,7 +1470,7 @@ pub fn assemble_tokens(
 
 /// Bounded, concurrent fetch of every included item's file.
 pub async fn fetch_all_files(
-    gateways: Arc<Vec<String>>,
+    gateways: Arc<Gateways>,
     paths: Vec<(B256, String)>,
     concurrency: usize,
 ) -> BTreeMap<B256, Result<ItemFile>> {

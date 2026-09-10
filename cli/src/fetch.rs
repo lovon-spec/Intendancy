@@ -44,6 +44,9 @@ pub(crate) fn http_client() -> Result<&'static reqwest::blocking::Client> {
         // refuse requests without one.
         let client = reqwest::blocking::Client::builder()
             .user_agent(concat!("intend/", env!("CARGO_PKG_VERSION")))
+            // Connection establishment (DNS, TCP, TLS) gets its own bound; a
+            // stalled resolver otherwise eats the whole request timeout.
+            .connect_timeout(std::time::Duration::from_secs(15))
             .http2_initial_stream_window_size(H2_STREAM_WINDOW_BYTES)
             .http2_initial_connection_window_size(H2_CONNECTION_WINDOW_BYTES)
             .http2_max_frame_size(H2_MAX_FRAME_BYTES)
@@ -121,15 +124,33 @@ pub fn read_snapshot_body(mut r: impl Read, limits: &crate::snapshot::Limits) ->
 /// content-length is prechecked, and the body is then consumed through the
 /// take-bounded reader (at most cap + 1 bytes read).
 pub async fn fetch_bounded(url: &str, cap: u64, accept: Option<&str>) -> Result<Vec<u8>> {
-    let url = url.to_string();
-    let accept = accept.map(str::to_owned);
-    tokio::task::spawn_blocking(move || fetch_bounded_blocking(&url, cap, accept.as_deref()))
-        .await
-        .wrap_err("fetch task")?
+    fetch_bounded_timeout(url, cap, accept, FETCH_TIMEOUT).await
 }
 
-fn fetch_bounded_blocking(url: &str, cap: u64, accept: Option<&str>) -> Result<Vec<u8>> {
-    let mut req = http_client()?.get(url).timeout(FETCH_TIMEOUT);
+/// `fetch_bounded` with a caller-chosen request deadline (small blocks do not
+/// deserve the CAR deadline).
+pub async fn fetch_bounded_timeout(
+    url: &str,
+    cap: u64,
+    accept: Option<&str>,
+    timeout: std::time::Duration,
+) -> Result<Vec<u8>> {
+    let url = url.to_string();
+    let accept = accept.map(str::to_owned);
+    tokio::task::spawn_blocking(move || {
+        fetch_bounded_blocking(&url, cap, accept.as_deref(), timeout)
+    })
+    .await
+    .wrap_err("fetch task")?
+}
+
+fn fetch_bounded_blocking(
+    url: &str,
+    cap: u64,
+    accept: Option<&str>,
+    timeout: std::time::Duration,
+) -> Result<Vec<u8>> {
+    let mut req = http_client()?.get(url).timeout(timeout);
     if let Some(a) = accept {
         req = req.header("Accept", a);
     }

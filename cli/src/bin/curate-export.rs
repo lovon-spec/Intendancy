@@ -74,8 +74,10 @@ struct SourceArgs {
     /// Untrusted proof provider (must serve eth_getProof at the anchor).
     #[arg(long, default_value = "https://gnosis-rpc.publicnode.com")]
     provider_rpc: String,
-    /// Trustless IPFS gateways, tried in order for every block.
-    #[arg(long = "gateway", default_values_t = ["https://trustless-gateway.link".to_string(), "https://dweb.link".to_string(), "https://ipfs.io".to_string()])]
+    /// IPFS gateways for raw blocks (every block is hash-verified, so any
+    /// gateway is safe); tried healthiest-first. The defaults answer path-style
+    /// requests directly; dweb.link and ipfs.io redirect twice per block.
+    #[arg(long = "gateway", default_values_t = ["https://trustless-gateway.net".to_string(), "https://cdn.kleros.link".to_string(), "https://ipfs.filebase.io".to_string(), "https://dweb.link".to_string(), "https://ipfs.io".to_string()])]
     gateways: Vec<String>,
     /// First block to scan for NewItem logs (preset's creation block, else discovered).
     #[arg(long)]
