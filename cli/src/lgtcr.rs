@@ -20,8 +20,10 @@
 //! Everything else (chain identity, anchoring, bounded transport) is shared
 //! with `intend`.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use alloy::primitives::{keccak256, Address, B256, U256};
 use alloy::providers::Provider;
@@ -31,10 +33,12 @@ use alloy::sol_types::SolEvent;
 use eyre::{bail, eyre, Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use tokio::task::JoinSet;
 
-use crate::anchor::{self, ChainPin, QuorumAnchor};
+use crate::anchor::{self, ChainPin, QuorumAnchor, Source};
 use crate::car::{self, Cid};
 use crate::snapshot::{verify_account, verify_slot, AccountFields, Limits};
+use crate::transport::{RpcCounts, RpcStats};
 
 sol! {
     /// LightGeneralizedTCR: emitted once per item, on first submission.
@@ -344,14 +348,10 @@ pub struct Enumeration {
     pub rpc_calls: u64,
 }
 
-fn provider_for(rpc: &str) -> Result<impl Provider + Clone> {
-    crate::transport::capped_provider(rpc)
-}
-
 /// Fetch every `NewItem` log of `list` in `[from, to]` from one RPC, in
 /// windows that halve on failure, and check each path against its id.
 pub async fn enumerate(
-    rpc: &str,
+    source: &Source,
     list: Address,
     from: u64,
     to: u64,
@@ -360,7 +360,8 @@ pub async fn enumerate(
     if from > to {
         bail!("enumeration range is empty ({from} > {to})");
     }
-    let provider = provider_for(rpc)?;
+    let rpc = source.rpc.as_str();
+    let provider = source.provider();
     let mut out = Enumeration::default();
     let mut window = window.max(1);
     let mut start = from;
@@ -461,18 +462,19 @@ pub fn describe_disagreement(
 /// windows backwards from `anchor_block` until a window holds no log and
 /// the list has no code at the window's first block.
 pub async fn discover_start(
-    rpc: &str,
+    source: &Source,
     list: Address,
     anchor_block: u64,
     window: u64,
 ) -> Result<(u64, u64)> {
-    let provider = provider_for(rpc)?;
+    let rpc = source.rpc.as_str();
+    let provider = source.provider();
     let window = window.max(1);
     let mut end = anchor_block;
     let mut calls = 0u64;
     loop {
         let start = end.saturating_sub(window - 1);
-        let e = enumerate(rpc, list, start, end, window).await?;
+        let e = enumerate(source, list, start, end, window).await?;
         calls += e.rpc_calls;
         if e.logs == 0 {
             calls += 1;
@@ -513,7 +515,7 @@ pub struct ProvenStatuses {
 /// proven one; otherwise the proven hash is recorded and must not be the
 /// empty-code hash.
 pub async fn prove_statuses(
-    rpc: &str,
+    source: &Source,
     list: Address,
     items_slot: u64,
     pinned_code_hash: Option<B256>,
@@ -521,7 +523,8 @@ pub async fn prove_statuses(
     ids: &[B256],
 ) -> Result<ProvenStatuses> {
     let limits = Limits::default();
-    let provider = provider_for(rpc)?;
+    let rpc = source.rpc.as_str();
+    let provider = source.provider();
     let at = BlockId::from(anchor.block_number);
     let keys: Vec<(B256, B256)> = ids
         .iter()
@@ -631,7 +634,116 @@ pub fn parse_ipfs_path(path: &str) -> Result<(Cid, Vec<String>)> {
 }
 
 /// Request deadline for one block: item files are a few KiB.
-pub const BLOCK_FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+pub const BLOCK_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Per-item work budget (see `ItemBudget`). A root block under the block cap
+/// can name thousands of links, so the size of the output bounds nothing;
+/// these do.
+pub const ITEM_MAX_BLOCKS: usize = 256;
+pub const ITEM_MAX_ATTEMPTS: u64 = 64;
+pub const ITEM_MAX_DOWNLOAD_BYTES: u64 = 8 * 1024 * 1024;
+pub const ITEM_TIME_BUDGET: Duration = Duration::from_secs(120);
+/// Rounds an item gets while a block is unavailable (each round asks every
+/// gateway once); round `n` waits `ITEM_RETRY_BACKOFF × n` first, in the
+/// delayed queue rather than as an admitted task.
+pub const ITEM_MAX_ROUNDS: u32 = 3;
+pub const ITEM_RETRY_BACKOFF: Duration = Duration::from_millis(500);
+/// Bounds of the run's verified-block cache.
+pub const BLOCK_CACHE_MAX_BYTES: usize = 64 * 1024 * 1024;
+pub const BLOCK_CACHE_MAX_ENTRIES: usize = 65_536;
+
+/// What one item may cost, whatever its shape: blocks visited (links
+/// followed, cache hits included), network attempts, bytes downloaded (bytes
+/// that fail their hash included) and wall-clock time from its first
+/// admission, retry rounds included. Exceeding any of them is final.
+#[derive(Debug, Clone, Copy)]
+pub struct ItemBudget {
+    pub max_blocks: usize,
+    pub max_attempts: u64,
+    pub max_download_bytes: u64,
+    pub time: Duration,
+    /// Deadline of one block request, shortened to what is left of `time`.
+    pub block_timeout: Duration,
+    pub max_rounds: u32,
+    pub retry_backoff: Duration,
+}
+
+impl Default for ItemBudget {
+    fn default() -> Self {
+        Self {
+            max_blocks: ITEM_MAX_BLOCKS,
+            max_attempts: ITEM_MAX_ATTEMPTS,
+            max_download_bytes: ITEM_MAX_DOWNLOAD_BYTES,
+            time: ITEM_TIME_BUDGET,
+            block_timeout: BLOCK_FETCH_TIMEOUT,
+            max_rounds: ITEM_MAX_ROUNDS,
+            retry_backoff: ITEM_RETRY_BACKOFF,
+        }
+    }
+}
+
+/// One item's spent budget, carried across its rounds.
+#[derive(Debug, Clone)]
+pub struct ItemWork {
+    pub deadline: Instant,
+    /// Blocks visited in the current round (a retry replays the walk, through
+    /// the cache for the blocks it already verified).
+    pub blocks: usize,
+    pub attempts: u64,
+    pub downloaded: u64,
+    pub rounds: u32,
+}
+
+impl ItemWork {
+    pub fn new(budget: &ItemBudget) -> Self {
+        Self {
+            deadline: Instant::now() + budget.time,
+            blocks: 0,
+            attempts: 0,
+            downloaded: 0,
+            rounds: 0,
+        }
+    }
+}
+
+/// Why an item's content could not be produced. Transient: no gateway served
+/// a block in this round (availability; a later round may). Permanent:
+/// hash-verified bytes that are not an item file, an unsupported layout, a bad
+/// path, an exhausted budget — fetching the same bytes again changes nothing,
+/// so nothing is retried.
+#[derive(Debug)]
+pub enum FetchError {
+    Transient(eyre::Report),
+    Permanent(eyre::Report),
+}
+
+impl FetchError {
+    pub fn is_transient(&self) -> bool {
+        matches!(self, Self::Transient(_))
+    }
+
+    pub fn report(&self) -> &eyre::Report {
+        match self {
+            Self::Transient(r) | Self::Permanent(r) => r,
+        }
+    }
+
+    pub fn into_report(self) -> eyre::Report {
+        match self {
+            Self::Transient(r) | Self::Permanent(r) => r,
+        }
+    }
+
+    fn permanent(e: impl Into<eyre::Report>) -> Self {
+        Self::Permanent(e.into())
+    }
+}
+
+impl std::fmt::Display for FetchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:#}", self.report())
+    }
+}
 
 /// Gateways with a per-run health score: a failure adds a penalty, a success
 /// clears it, and every block tries the gateways in order of least penalty, so
@@ -650,7 +762,7 @@ impl Gateways {
         }
     }
 
-    fn ordered(&self) -> Vec<usize> {
+    pub fn ordered(&self) -> Vec<usize> {
         let p = self.penalties.lock().unwrap_or_else(|e| e.into_inner());
         let mut idx: Vec<usize> = (0..self.urls.len()).collect();
         idx.sort_by_key(|i| (p[*i], *i));
@@ -667,126 +779,540 @@ impl Gateways {
     }
 }
 
-/// One verified block: fetched from the gateways, healthiest first, until one
-/// serves bytes that hash to the CID.
-async fn fetch_block(gateways: &Gateways, cid: Cid) -> Result<Vec<u8>> {
-    let text = if cid.codec == 0x70 {
-        cid.to_string_v0()?
-    } else {
-        cid.to_string_canonical()
-    };
-    let mut errors = Vec::new();
-    for i in gateways.ordered() {
-        let gw = &gateways.urls[i];
-        let url = format!("{}/ipfs/{text}?format=raw", gw.trim_end_matches('/'));
-        match crate::fetch::fetch_bounded_timeout(
-            &url,
-            car::MAX_BLOCK_BYTES as u64,
-            Some("application/vnd.ipld.raw"),
-            BLOCK_FETCH_TIMEOUT,
-        )
-        .await
-        {
-            Ok(bytes) => {
-                let digest: [u8; 32] = Sha256::digest(&bytes).into();
-                if digest == cid.digest {
-                    gateways.report(i, true);
-                    return Ok(bytes);
-                }
-                gateways.report(i, false);
-                errors.push(format!("{gw}: block bytes do not hash to {text}"));
-            }
-            Err(e) => {
-                gateways.report(i, false);
-                errors.push(format!("{gw}: {e:#}"));
-            }
-        }
-    }
-    bail!("no gateway served block {text}: {}", errors.join("; "))
+/// Run-scoped counters of the content pipeline.
+#[derive(Debug, Default)]
+pub struct IpfsStats {
+    requests: AtomicU64,
+    response_bytes: AtomicU64,
+    bad_bytes: AtomicU64,
+    cache_hits: AtomicU64,
+    coalesced: AtomicU64,
+    item_retries: AtomicU64,
 }
 
-/// Materialize the bytes behind `cid` (+ optional path segments): a raw block,
-/// a dag-pb file (inline or chunked), or a directory walked by name. Every
-/// block is hash-verified; total size is bounded by `MAX_ITEM_BYTES`.
-pub async fn fetch_item_bytes(
-    gateways: &Gateways,
-    cid: Cid,
-    segments: &[String],
-) -> Result<Vec<u8>> {
-    let mut cid = cid;
-    let mut segs = segments.to_vec();
-    let mut depth = 0usize;
-    loop {
-        depth += 1;
-        if depth > car::MAX_DEPTH {
-            bail!("item path too deep");
+/// A reading of `IpfsStats`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IpfsCounts {
+    /// Block requests sent to gateways (every attempt at every gateway).
+    pub requests: u64,
+    /// Response bytes downloaded, bytes that failed their hash included.
+    #[serde(rename = "responseBytes")]
+    pub response_bytes: u64,
+    /// Responses whose bytes did not hash to the CID asked for.
+    #[serde(rename = "badBytes")]
+    pub bad_bytes: u64,
+    /// Blocks served from the run's verified-block cache.
+    #[serde(rename = "cacheHits")]
+    pub cache_hits: u64,
+    /// Block requests that waited for another task's fetch of the same block.
+    pub coalesced: u64,
+    /// Item rounds beyond the first (a block was unavailable).
+    #[serde(rename = "itemRetries")]
+    pub item_retries: u64,
+}
+
+impl IpfsStats {
+    pub fn counts(&self) -> IpfsCounts {
+        IpfsCounts {
+            requests: self.requests.load(Ordering::Relaxed),
+            response_bytes: self.response_bytes.load(Ordering::Relaxed),
+            bad_bytes: self.bad_bytes.load(Ordering::Relaxed),
+            cache_hits: self.cache_hits.load(Ordering::Relaxed),
+            coalesced: self.coalesced.load(Ordering::Relaxed),
+            item_retries: self.item_retries.load(Ordering::Relaxed),
         }
-        let block = fetch_block(gateways, cid).await?;
-        if cid.codec == 0x55 {
+    }
+}
+
+/// Hash-verified blocks of this run, keyed by CID (codec and digest: the same
+/// bytes under a CIDv0 and a CIDv1 text form are one entry), bounded in bytes
+/// and entries with oldest-first eviction. A miss in flight is shared: every
+/// concurrent caller for one CID waits for the one fetch. A failed fetch
+/// leaves no entry, so an availability failure is never remembered.
+struct BlockCache {
+    inner: std::sync::Mutex<CacheInner>,
+    max_bytes: usize,
+    max_entries: usize,
+}
+
+struct CacheInner {
+    entries: BTreeMap<Cid, Arc<tokio::sync::OnceCell<Arc<[u8]>>>>,
+    order: VecDeque<Cid>,
+    bytes: usize,
+}
+
+impl BlockCache {
+    fn new(max_bytes: usize, max_entries: usize) -> Self {
+        Self {
+            inner: std::sync::Mutex::new(CacheInner {
+                entries: BTreeMap::new(),
+                order: VecDeque::new(),
+                bytes: 0,
+            }),
+            max_bytes,
+            max_entries: max_entries.max(1),
+        }
+    }
+
+    async fn get_or_fetch<F, Fut>(
+        &self,
+        cid: Cid,
+        stats: &IpfsStats,
+        fetch: F,
+    ) -> Result<Arc<[u8]>, FetchError>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<Vec<u8>, FetchError>>,
+    {
+        let (cell, known) = {
+            let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            match g.entries.get(&cid) {
+                Some(c) => (c.clone(), true),
+                None => {
+                    let c = Arc::new(tokio::sync::OnceCell::new());
+                    g.entries.insert(cid, c.clone());
+                    g.order.push_back(cid);
+                    (c, false)
+                }
+            }
+        };
+        let ready = cell.initialized();
+        let mut fetched_here = false;
+        let bytes = cell
+            .get_or_try_init(|| {
+                fetched_here = true;
+                async move { fetch().await.map(Arc::<[u8]>::from) }
+            })
+            .await?
+            .clone();
+        if ready {
+            stats.cache_hits.fetch_add(1, Ordering::Relaxed);
+        } else if known && !fetched_here {
+            stats.coalesced.fetch_add(1, Ordering::Relaxed);
+        }
+        if fetched_here {
+            let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            if g.entries.get(&cid).is_some_and(|c| Arc::ptr_eq(c, &cell)) {
+                g.bytes += bytes.len();
+            }
+            while (g.bytes > self.max_bytes || g.entries.len() > self.max_entries)
+                && g.order.len() > 1
+            {
+                let Some(old) = g.order.pop_front() else {
+                    break;
+                };
+                if let Some(c) = g.entries.remove(&old) {
+                    if let Some(b) = c.get() {
+                        g.bytes = g.bytes.saturating_sub(b.len());
+                    }
+                }
+            }
+        }
+        Ok(bytes)
+    }
+}
+
+/// The content pipeline of one run: gateways ordered by health, the
+/// verified-block cache, the network permits (`concurrency` block requests in
+/// flight; a permit spans exactly one blocking request and nothing else), the
+/// per-item budget and the counters.
+pub struct Fetcher {
+    gateways: Gateways,
+    cache: BlockCache,
+    network: tokio::sync::Semaphore,
+    budget: ItemBudget,
+    stats: IpfsStats,
+}
+
+impl Fetcher {
+    pub fn new(gateways: &[String], concurrency: usize) -> Self {
+        Self {
+            gateways: Gateways::new(gateways),
+            cache: BlockCache::new(BLOCK_CACHE_MAX_BYTES, BLOCK_CACHE_MAX_ENTRIES),
+            network: tokio::sync::Semaphore::new(concurrency.max(1)),
+            budget: ItemBudget::default(),
+            stats: IpfsStats::default(),
+        }
+    }
+
+    pub fn with_budget(mut self, budget: ItemBudget) -> Self {
+        self.budget = budget;
+        self
+    }
+
+    pub fn budget(&self) -> &ItemBudget {
+        &self.budget
+    }
+
+    pub fn gateways(&self) -> &Gateways {
+        &self.gateways
+    }
+
+    pub fn counts(&self) -> IpfsCounts {
+        self.stats.counts()
+    }
+
+    /// One verified block, from the cache or from the gateways, counted
+    /// against the item's block budget either way.
+    async fn fetch_block(&self, cid: Cid, work: &mut ItemWork) -> Result<Arc<[u8]>, FetchError> {
+        work.blocks += 1;
+        if work.blocks > self.budget.max_blocks {
+            return Err(FetchError::Permanent(eyre!(
+                "item traverses more than {} blocks",
+                self.budget.max_blocks
+            )));
+        }
+        self.cache
+            .get_or_fetch(cid, &self.stats, move || {
+                self.fetch_block_network(cid, work)
+            })
+            .await
+    }
+
+    /// One block from the gateways, healthiest first, until one serves bytes
+    /// that hash to the CID. A gateway's wrong bytes or failure moves on to
+    /// the next; when none served the block this round, the failure is
+    /// transient. Every request's deadline is the shorter of the block
+    /// timeout and what is left of the item's time budget, and the network
+    /// permit is held until the blocking request has returned (a dropped
+    /// future would not stop it).
+    async fn fetch_block_network(
+        &self,
+        cid: Cid,
+        work: &mut ItemWork,
+    ) -> Result<Vec<u8>, FetchError> {
+        let text = if cid.codec == 0x70 {
+            cid.to_string_v0().map_err(FetchError::permanent)?
+        } else {
+            cid.to_string_canonical()
+        };
+        let mut errors = Vec::new();
+        for i in self.gateways.ordered() {
+            if work.attempts >= self.budget.max_attempts {
+                return Err(FetchError::Permanent(eyre!(
+                    "item exhausted its network budget of {} attempts (block {text}: {})",
+                    self.budget.max_attempts,
+                    errors.join("; ")
+                )));
+            }
+            let remaining = work.deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(FetchError::Permanent(eyre!(
+                    "item exhausted its time budget of {:?} (block {text}: {})",
+                    self.budget.time,
+                    errors.join("; ")
+                )));
+            }
+            let timeout = remaining.min(self.budget.block_timeout);
+            work.attempts += 1;
+            self.stats.requests.fetch_add(1, Ordering::Relaxed);
+            let gw = &self.gateways.urls[i];
+            let url = format!("{}/ipfs/{text}?format=raw", gw.trim_end_matches('/'));
+            let permit = self
+                .network
+                .acquire()
+                .await
+                .map_err(|_| FetchError::Permanent(eyre!("fetcher closed")))?;
+            let res = crate::fetch::fetch_bounded_timeout(
+                &url,
+                car::MAX_BLOCK_BYTES as u64,
+                Some("application/vnd.ipld.raw"),
+                timeout,
+            )
+            .await;
+            drop(permit);
+            match res {
+                Ok(bytes) => {
+                    work.downloaded += bytes.len() as u64;
+                    self.stats
+                        .response_bytes
+                        .fetch_add(bytes.len() as u64, Ordering::Relaxed);
+                    let over_budget = work.downloaded > self.budget.max_download_bytes;
+                    let digest: [u8; 32] = Sha256::digest(&bytes).into();
+                    if digest == cid.digest {
+                        self.gateways.report(i, true);
+                        if over_budget {
+                            return Err(FetchError::Permanent(eyre!(
+                                "item exhausted its download budget of {} bytes",
+                                self.budget.max_download_bytes
+                            )));
+                        }
+                        return Ok(bytes);
+                    }
+                    self.gateways.report(i, false);
+                    self.stats.bad_bytes.fetch_add(1, Ordering::Relaxed);
+                    errors.push(format!("{gw}: block bytes do not hash to {text}"));
+                    if over_budget {
+                        return Err(FetchError::Permanent(eyre!(
+                            "item exhausted its download budget of {} bytes ({})",
+                            self.budget.max_download_bytes,
+                            errors.join("; ")
+                        )));
+                    }
+                }
+                Err(e) => {
+                    self.gateways.report(i, false);
+                    errors.push(format!("{gw}: {e:#}"));
+                }
+            }
+        }
+        Err(FetchError::Transient(eyre!(
+            "no gateway served block {text}: {}",
+            errors.join("; ")
+        )))
+    }
+
+    /// Materialize the bytes behind `cid` (+ optional path segments): a raw
+    /// block, a dag-pb file (inline or chunked), or a directory walked by
+    /// name. Every block is hash-verified; the assembled size is bounded by
+    /// `MAX_ITEM_BYTES` and the work by the item's budget.
+    pub async fn fetch_item_bytes(
+        &self,
+        cid: Cid,
+        segments: &[String],
+        work: &mut ItemWork,
+    ) -> Result<Vec<u8>, FetchError> {
+        let mut cid = cid;
+        let mut segs = segments.to_vec();
+        let mut depth = 0usize;
+        loop {
+            depth += 1;
+            if depth > car::MAX_DEPTH {
+                return Err(FetchError::Permanent(eyre!("item path too deep")));
+            }
+            let block = self.fetch_block(cid, work).await?;
+            if cid.codec == 0x55 {
+                if !segs.is_empty() {
+                    return Err(FetchError::Permanent(eyre!("cannot walk into a raw block")));
+                }
+                return Ok(block.to_vec());
+            }
+            let node = car::decode_pbnode_lenient(&block).map_err(FetchError::permanent)?;
             if !segs.is_empty() {
-                bail!("cannot walk into a raw block");
-            }
-            return Ok(block);
-        }
-        let node = car::decode_pbnode_lenient(&block)?;
-        if !segs.is_empty() {
-            if node.unixfs.node_type != car::UNIXFS_DIRECTORY {
-                bail!("path segment {:?} under a non-directory", segs[0]);
-            }
-            let want = segs.remove(0);
-            let link = node
-                .links
-                .iter()
-                .find(|l| l.name == want)
-                .ok_or_else(|| eyre!("no entry named {want:?}"))?;
-            cid = link.cid;
-            continue;
-        }
-        if node.unixfs.node_type != car::UNIXFS_FILE {
-            bail!("item is not a file (UnixFS type {})", node.unixfs.node_type);
-        }
-        let mut out = node.unixfs.data.unwrap_or_default();
-        for link in &node.links {
-            let child = fetch_block(gateways, link.cid).await?;
-            let bytes = if link.cid.codec == 0x55 {
-                child
-            } else {
-                let leaf = car::decode_pbnode_lenient(&child)?;
-                if leaf.unixfs.node_type != car::UNIXFS_FILE || !leaf.links.is_empty() {
-                    bail!("multi-level chunked file (outside the supported layout)");
+                if node.unixfs.node_type != car::UNIXFS_DIRECTORY {
+                    return Err(FetchError::Permanent(eyre!(
+                        "path segment {:?} under a non-directory",
+                        segs[0]
+                    )));
                 }
-                leaf.unixfs.data.unwrap_or_default()
-            };
-            out.extend_from_slice(&bytes);
-            if out.len() > MAX_ITEM_BYTES {
-                bail!("item file exceeds {MAX_ITEM_BYTES} bytes");
+                let want = segs.remove(0);
+                let link = node
+                    .links
+                    .iter()
+                    .find(|l| l.name == want)
+                    .ok_or_else(|| FetchError::Permanent(eyre!("no entry named {want:?}")))?;
+                cid = link.cid;
+                continue;
             }
+            if node.unixfs.node_type != car::UNIXFS_FILE {
+                return Err(FetchError::Permanent(eyre!(
+                    "item is not a file (UnixFS type {})",
+                    node.unixfs.node_type
+                )));
+            }
+            let mut out = node.unixfs.data.unwrap_or_default();
+            if out.len() > MAX_ITEM_BYTES {
+                return Err(FetchError::Permanent(eyre!(
+                    "item file exceeds {MAX_ITEM_BYTES} bytes"
+                )));
+            }
+            for link in &node.links {
+                let child = self.fetch_block(link.cid, work).await?;
+                let leaf_data;
+                let bytes: &[u8] = if link.cid.codec == 0x55 {
+                    &child
+                } else {
+                    let leaf = car::decode_pbnode_lenient(&child).map_err(FetchError::permanent)?;
+                    if leaf.unixfs.node_type != car::UNIXFS_FILE || !leaf.links.is_empty() {
+                        return Err(FetchError::Permanent(eyre!(
+                            "multi-level chunked file (outside the supported layout)"
+                        )));
+                    }
+                    leaf_data = leaf.unixfs.data.unwrap_or_default();
+                    &leaf_data
+                };
+                out.extend_from_slice(bytes);
+                if out.len() > MAX_ITEM_BYTES {
+                    return Err(FetchError::Permanent(eyre!(
+                        "item file exceeds {MAX_ITEM_BYTES} bytes"
+                    )));
+                }
+            }
+            return Ok(out);
         }
-        return Ok(out);
+    }
+
+    /// The item file behind an item path, parsed into its `columns` and
+    /// `values`; a parse failure of hash-verified bytes is permanent.
+    pub async fn fetch_item_file(
+        &self,
+        path: &str,
+        work: &mut ItemWork,
+    ) -> Result<ItemFile, FetchError> {
+        let (cid, segments) = parse_ipfs_path(path).map_err(FetchError::permanent)?;
+        let bytes = self.fetch_item_bytes(cid, &segments, work).await?;
+        ItemFile::parse(&bytes).map_err(FetchError::permanent)
     }
 }
 
-/// An item file: its `columns` (verbatim) and `values` (keyed by label).
-#[derive(Debug, Clone)]
+/// An item file: its `columns` (verbatim; null when absent) and `values`
+/// (keyed by label). Deserialized straight into owned fields.
+#[derive(Debug, Clone, Deserialize)]
 pub struct ItemFile {
+    #[serde(default)]
     pub columns: serde_json::Value,
     pub values: serde_json::Map<String, serde_json::Value>,
 }
 
-pub async fn fetch_item_file(gateways: &Gateways, path: &str) -> Result<ItemFile> {
-    let (cid, segments) = parse_ipfs_path(path)?;
-    let bytes = fetch_item_bytes(gateways, cid, &segments).await?;
-    let json: serde_json::Value = serde_json::from_slice(&bytes).wrap_err("item JSON")?;
-    let values = json
-        .get("values")
-        .and_then(|v| v.as_object())
-        .ok_or_else(|| eyre!("item JSON has no `values` object"))?
-        .clone();
-    let columns = json
-        .get("columns")
-        .cloned()
-        .unwrap_or(serde_json::Value::Null);
-    Ok(ItemFile { columns, values })
+impl ItemFile {
+    pub fn parse(bytes: &[u8]) -> Result<Self> {
+        serde_json::from_slice(bytes).wrap_err("item JSON")
+    }
+}
+
+// ---------- bounded scheduling ----------
+
+/// One round of work on an item, as the scheduler sees it.
+pub enum Round<T, S> {
+    Done(T),
+    Failed(eyre::Report),
+    /// Try again no sooner than `after` from now, carrying `state`; until
+    /// then the item waits in the delayed queue, not as an admitted task.
+    Retry {
+        after: Duration,
+        state: S,
+    },
+}
+
+/// Run `round` over every item with at most `concurrency` tasks admitted at a
+/// time: an item is spawned only when a slot is free, a completion frees the
+/// slot, and delayed retries wait in a queue of their own (one entry per item)
+/// until due, then go first. Every task keeps its item id, so a task that
+/// fails (a panic) records an error under that item.
+pub async fn run_bounded<T, S, F, Fut>(
+    items: Vec<(B256, String)>,
+    concurrency: usize,
+    mut round: F,
+) -> BTreeMap<B256, Result<T>>
+where
+    T: Send + 'static,
+    S: Send + 'static,
+    F: FnMut(B256, Arc<str>, Option<S>) -> Fut,
+    Fut: std::future::Future<Output = Round<T, S>> + Send + 'static,
+{
+    let concurrency = concurrency.max(1);
+    let mut queue: VecDeque<(B256, Arc<str>, Option<S>)> = items
+        .into_iter()
+        .map(|(id, path)| (id, Arc::from(path), None))
+        .collect();
+    let mut delayed: BTreeMap<(Instant, u64), (B256, Arc<str>, S)> = BTreeMap::new();
+    let mut seq = 0u64;
+    let mut set: JoinSet<Round<T, S>> = JoinSet::new();
+    let mut running: HashMap<tokio::task::Id, (B256, Arc<str>)> = HashMap::new();
+    let mut out = BTreeMap::new();
+    loop {
+        let now = Instant::now();
+        while delayed.first_key_value().is_some_and(|(k, _)| k.0 <= now) {
+            if let Some((_, (id, path, state))) = delayed.pop_first() {
+                queue.push_front((id, path, Some(state)));
+            }
+        }
+        while set.len() < concurrency {
+            let Some((id, path, state)) = queue.pop_front() else {
+                break;
+            };
+            let handle = set.spawn(round(id, path.clone(), state));
+            running.insert(handle.id(), (id, path));
+        }
+        if set.is_empty() {
+            match delayed.first_key_value() {
+                Some((&(due, _), _)) => {
+                    tokio::time::sleep_until(tokio::time::Instant::from_std(due)).await;
+                    continue;
+                }
+                None => break,
+            }
+        }
+        let next_due = delayed.first_key_value().map(|(&(due, _), _)| due);
+        let joined = match next_due {
+            Some(due) => tokio::select! {
+                j = set.join_next_with_id() => j,
+                _ = tokio::time::sleep_until(tokio::time::Instant::from_std(due)) => continue,
+            },
+            None => set.join_next_with_id().await,
+        };
+        let Some(joined) = joined else {
+            continue;
+        };
+        match joined {
+            Ok((tid, outcome)) => {
+                let Some((id, path)) = running.remove(&tid) else {
+                    continue;
+                };
+                match outcome {
+                    Round::Done(v) => {
+                        out.insert(id, Ok(v));
+                    }
+                    Round::Failed(e) => {
+                        out.insert(id, Err(e));
+                    }
+                    Round::Retry { after, state } => {
+                        seq += 1;
+                        delayed.insert((Instant::now() + after, seq), (id, path, state));
+                    }
+                }
+            }
+            Err(e) => {
+                if let Some((id, _)) = running.remove(&e.id()) {
+                    out.insert(id, Err(eyre!("fetch task failed: {e}")));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Fetch every included item's file through `fetcher`, at most `concurrency`
+/// items admitted at a time (and at most `concurrency` block requests in
+/// flight, the fetcher's own permit). A transient failure puts the item in
+/// the delayed queue for another round within its budget; a permanent one is
+/// recorded as is.
+pub async fn fetch_all_files(
+    fetcher: Arc<Fetcher>,
+    paths: Vec<(B256, String)>,
+    concurrency: usize,
+) -> BTreeMap<B256, Result<ItemFile>> {
+    run_bounded(
+        paths,
+        concurrency,
+        move |_id, path, work: Option<ItemWork>| {
+            let f = fetcher.clone();
+            async move {
+                let mut work = work.unwrap_or_else(|| ItemWork::new(f.budget()));
+                work.rounds += 1;
+                work.blocks = 0;
+                match f.fetch_item_file(&path, &mut work).await {
+                    Ok(v) => Round::Done(v),
+                    Err(FetchError::Permanent(e)) => Round::Failed(e),
+                    Err(FetchError::Transient(e)) => {
+                        let backoff = f.budget().retry_backoff * work.rounds;
+                        if work.rounds < f.budget().max_rounds
+                            && Instant::now() + backoff < work.deadline
+                        {
+                            f.stats.item_retries.fetch_add(1, Ordering::Relaxed);
+                            Round::Retry {
+                                after: backoff,
+                                state: work,
+                            }
+                        } else {
+                            Round::Failed(e.wrap_err(format!("after {} rounds", work.rounds)))
+                        }
+                    }
+                }
+            }
+        },
+    )
+    .await
 }
 
 // ---------- token list ----------
@@ -1115,6 +1641,16 @@ pub struct Counts {
     pub skipped: u64,
 }
 
+/// Wall-clock seconds per stage of the export.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct StageSeconds {
+    pub identity: f64,
+    pub anchor: f64,
+    pub enumeration: f64,
+    pub proofs: f64,
+    pub content: f64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Provenance {
     #[serde(rename = "chainId")]
@@ -1145,8 +1681,18 @@ pub struct Provenance {
     pub skipped: Vec<Skipped>,
     #[serde(rename = "outputSha256")]
     pub output_sha256: String,
+    /// JSON-RPC requests issued (measured; `rpc` breaks them down).
     #[serde(rename = "rpcCalls")]
     pub rpc_calls: u64,
+    /// Measured JSON-RPC work: requests, HTTP attempts, retries, bytes.
+    #[serde(default)]
+    pub rpc: RpcCounts,
+    /// Measured content work: block requests, bytes, bad bytes, cache hits,
+    /// coalesced requests, item retries.
+    #[serde(default)]
+    pub ipfs: IpfsCounts,
+    #[serde(rename = "stageSeconds", default)]
+    pub stage_seconds: StageSeconds,
     #[serde(rename = "elapsedSeconds")]
     pub elapsed_seconds: f64,
     #[serde(rename = "toolVersion")]
@@ -1170,6 +1716,10 @@ pub struct ExportConfig {
     pub provider_rpc: String,
     pub gateways: Vec<String>,
     pub from_block: Option<u64>,
+    /// Anchor at this finalized height instead of the current one (a rerun
+    /// at an earlier export's anchor; every anchor source must have
+    /// finalized it).
+    pub anchor_block: Option<u64>,
     pub log_window: u64,
     pub concurrency: usize,
     pub filter: StatusFilter,
@@ -1187,7 +1737,11 @@ pub struct ExportOutcome {
     pub code_hash: B256,
     pub from_block: u64,
     pub from_block_source: String,
+    /// JSON-RPC requests issued, measured at the transport.
     pub rpc_calls: u64,
+    pub rpc: RpcCounts,
+    pub ipfs: IpfsCounts,
+    pub stages: StageSeconds,
     pub anchor_mode: String,
 }
 
@@ -1206,52 +1760,76 @@ pub async fn export_list(
     if cfg.gateways.is_empty() {
         bail!("at least one gateway is required");
     }
-    let mut rpc_calls = 0u64;
+    let stats = Arc::new(RpcStats::default());
+    let mut stages = StageSeconds::default();
+    let mut clock = Instant::now();
+    let lap = |clock: &mut Instant| {
+        let s = clock.elapsed().as_secs_f64();
+        *clock = Instant::now();
+        s
+    };
 
-    // 1. Chain identity of every source.
-    let mut all: Vec<&String> = cfg.anchor_rpcs.iter().chain(cfg.log_rpcs.iter()).collect();
-    all.push(&cfg.provider_rpc);
-    all.sort();
-    all.dedup();
-    for rpc in &all {
-        anchor::authenticate_source_pin(rpc, &cfg.pin).await?;
-        rpc_calls += 2;
+    // 1. Chain identity of every distinct source, once; the authenticated
+    //    sources (and their transports) serve every later step.
+    let mut urls: Vec<&String> = cfg.anchor_rpcs.iter().chain(cfg.log_rpcs.iter()).collect();
+    urls.push(&cfg.provider_rpc);
+    urls.sort();
+    urls.dedup();
+    let mut sources: BTreeMap<String, Source> = BTreeMap::new();
+    for rpc in &urls {
+        let source = Source::authenticate(rpc, &cfg.pin, &stats).await?;
+        sources.insert((*rpc).clone(), source);
     }
+    stages.identity = lap(&mut clock);
     progress(format!(
         "chain identity: {} sources serve chain {} with the pinned genesis",
-        all.len(),
+        sources.len(),
         cfg.pin.chain_id
     ));
 
-    // 2. Anchor (each source: identity again, finalized head, header at the agreed height).
-    let quorum = anchor::finalized_quorum_rpcs(&cfg.anchor_rpcs, &cfg.pin).await?;
-    rpc_calls += 4 * cfg.anchor_rpcs.len() as u64;
+    // 2. Anchor: each anchor source's finalized head, then the header every
+    //    source serves at the agreed height (or at the pinned one).
+    let anchor_sources: Vec<Source> = cfg
+        .anchor_rpcs
+        .iter()
+        .map(|rpc| sources[rpc].clone())
+        .collect();
+    let (quorum, anchor_mode) = match cfg.anchor_block {
+        None => (
+            anchor::finalized_quorum_sources(&anchor_sources).await?,
+            "header-quorum (alpha)".to_string(),
+        ),
+        Some(number) => (
+            anchor::pinned_quorum_sources(&anchor_sources, number).await?,
+            "header-quorum at a pinned finalized height (alpha)".to_string(),
+        ),
+    };
     if quorum.state_root == B256::ZERO {
         bail!("anchor header carries a zero state root; refusing");
     }
-    let anchor_mode = "header-quorum (alpha)".to_string();
+    stages.anchor = lap(&mut clock);
     progress(format!(
         "anchor: block {} {} ({} sources agree)",
         quorum.block_number, quorum.block_hash, quorum.sources
     ));
 
     // 3. Enumeration from every log source; the sets must agree.
+    let log_sources: Vec<&Source> = cfg.log_rpcs.iter().map(|rpc| &sources[rpc]).collect();
     let (from_block, from_source) = match cfg.from_block {
         Some(b) => (b, "flag or preset".to_string()),
         None => {
-            let (b, calls) = discover_start(
-                &cfg.log_rpcs[0],
+            let (b, _) = discover_start(
+                log_sources[0],
                 cfg.list,
                 quorum.block_number,
                 cfg.log_window,
             )
             .await?;
-            rpc_calls += calls;
             (
                 b,
                 format!(
                     "discovered via {} (first window with no logs and no code)",
-                    cfg.log_rpcs[0]
+                    log_sources[0].rpc
                 ),
             )
         }
@@ -1261,24 +1839,24 @@ pub async fn export_list(
         quorum.block_number
     ));
     let mut enums: Vec<(String, Enumeration)> = Vec::new();
-    for rpc in &cfg.log_rpcs {
+    for source in &log_sources {
         let e = enumerate(
-            rpc,
+            source,
             cfg.list,
             from_block,
             quorum.block_number,
             cfg.log_window,
         )
         .await?;
-        rpc_calls += e.rpc_calls;
         progress(format!(
-            "  {rpc}: {} logs, {} items, {} path/id mismatches, {} calls",
+            "  {}: {} logs, {} items, {} path/id mismatches, {} calls",
+            source.rpc,
             e.logs,
             e.items.len(),
             e.mismatched.len(),
             e.rpc_calls
         ));
-        enums.push((rpc.clone(), e));
+        enums.push((source.rpc.clone(), e));
     }
     for i in 1..enums.len() {
         if let Some(msg) = describe_disagreement(&enums[0].0, &enums[0].1, &enums[i].0, &enums[i].1)
@@ -1291,10 +1869,11 @@ pub async fn export_list(
     if ids.is_empty() {
         bail!("no items enumerated");
     }
+    stages.enumeration = lap(&mut clock);
 
     // 4. Status proofs at the anchor.
     let proven = prove_statuses(
-        &cfg.provider_rpc,
+        &sources[&cfg.provider_rpc],
         cfg.list,
         cfg.items_slot,
         cfg.code_hash,
@@ -1302,11 +1881,11 @@ pub async fn export_list(
         &ids,
     )
     .await?;
-    rpc_calls += proven.rpc_calls;
     let mut by_status: BTreeMap<String, u64> = BTreeMap::new();
     for s in proven.statuses.values() {
         *by_status.entry(status_name(*s).to_string()).or_default() += 1;
     }
+    stages.proofs = lap(&mut clock);
     progress(format!(
         "statuses proven at block {} in {} eth_getProof calls: {:?}",
         quorum.block_number, proven.rpc_calls, by_status
@@ -1327,25 +1906,73 @@ pub async fn export_list(
         wanted.len(),
         cfg.gateways.len()
     ));
-    let fetched = fetch_all_files(
-        Arc::new(Gateways::new(&cfg.gateways)),
-        wanted,
-        cfg.concurrency,
-    )
-    .await;
+    let fetcher = Arc::new(Fetcher::new(&cfg.gateways, cfg.concurrency));
+    let mut fetched = fetch_all_files(fetcher.clone(), wanted, cfg.concurrency).await;
+    let (items, fetch_failures) = records_from(
+        &enumeration.items,
+        &proven.statuses,
+        &cfg.filter,
+        &mut fetched,
+    );
+    stages.content = lap(&mut clock);
+    let ipfs = fetcher.counts();
+    progress(format!(
+        "content: {} block requests, {} bytes, {} bad-byte responses, {} cache hits, {} item retries, {} failures",
+        ipfs.requests, ipfs.response_bytes, ipfs.bad_bytes, ipfs.cache_hits, ipfs.item_retries, fetch_failures
+    ));
+    let snapshot = ListSnapshot {
+        chain_id: cfg.pin.chain_id,
+        list: cfg.list.to_checksum(None),
+        registry: cfg.registry.clone(),
+        anchor: ProvenanceAnchor {
+            number: quorum.block_number,
+            hash: format!("{}", quorum.block_hash),
+            state_root: format!("{}", quorum.state_root),
+            timestamp: quorum.timestamp,
+            mode: anchor_mode.clone(),
+        },
+        included_statuses: cfg.filter.names(),
+        items,
+    };
+    let rpc = stats.counts();
+    Ok(ExportOutcome {
+        snapshot,
+        anchor: quorum,
+        logs: enumeration.logs,
+        unique_items: enumeration.items.len() as u64,
+        mismatched: enumeration.mismatched.len() as u64,
+        by_status,
+        fetch_failures,
+        code_hash: proven.code_hash,
+        from_block,
+        from_block_source: from_source,
+        rpc_calls: rpc.requests,
+        rpc,
+        ipfs,
+        stages,
+        anchor_mode,
+    })
+}
+
+/// The snapshot's records from the enumerated paths, the proven statuses and
+/// the fetch results, in item-id order; the fetched payloads move into the
+/// records. Returns the records and the number of items whose fetch failed
+/// (their record carries the error).
+pub fn records_from(
+    paths: &BTreeMap<B256, String>,
+    statuses: &BTreeMap<B256, u8>,
+    filter: &StatusFilter,
+    fetched: &mut BTreeMap<B256, Result<ItemFile>>,
+) -> (Vec<ItemRecord>, u64) {
     let mut items = Vec::new();
     let mut fetch_failures = 0u64;
-    for (id, path) in &enumeration.items {
-        let status = proven.statuses[id];
-        if !cfg.filter.includes(status) {
+    for (id, path) in paths {
+        let status = statuses[id];
+        if !filter.includes(status) {
             continue;
         }
-        let (columns, values, error) = match fetched.get(id) {
-            Some(Ok(f)) => (
-                f.columns.clone(),
-                serde_json::Value::Object(f.values.clone()),
-                None,
-            ),
+        let (columns, values, error) = match fetched.remove(id) {
+            Some(Ok(f)) => (f.columns, serde_json::Value::Object(f.values), None),
             Some(Err(e)) => {
                 fetch_failures += 1;
                 (
@@ -1367,34 +1994,7 @@ pub async fn export_list(
         });
     }
     items.sort_by(|a, b| a.item_id.cmp(&b.item_id));
-    let snapshot = ListSnapshot {
-        chain_id: cfg.pin.chain_id,
-        list: cfg.list.to_checksum(None),
-        registry: cfg.registry.clone(),
-        anchor: ProvenanceAnchor {
-            number: quorum.block_number,
-            hash: format!("{}", quorum.block_hash),
-            state_root: format!("{}", quorum.state_root),
-            timestamp: quorum.timestamp,
-            mode: anchor_mode.clone(),
-        },
-        included_statuses: cfg.filter.names(),
-        items,
-    };
-    Ok(ExportOutcome {
-        snapshot,
-        anchor: quorum,
-        logs: enumeration.logs,
-        unique_items: enumeration.items.len() as u64,
-        mismatched: enumeration.mismatched.len() as u64,
-        by_status,
-        fetch_failures,
-        code_hash: proven.code_hash,
-        from_block,
-        from_block_source: from_source,
-        rpc_calls,
-        anchor_mode,
-    })
+    (items, fetch_failures)
 }
 
 /// Tokens from a snapshot: every Registered item's values (plus
@@ -1404,27 +2004,28 @@ pub fn tokens_from_snapshot(
     include_clearing: bool,
     logo_base: &str,
 ) -> Result<(Vec<Token>, Vec<Skipped>)> {
-    let mut inputs: ItemInputs = BTreeMap::new();
+    let mut inputs: ItemInputs<'_> = BTreeMap::new();
     for it in &snapshot.items {
         let id: B256 = it
             .item_id
             .parse()
             .map_err(|e| eyre!("item id {}: {e}", it.item_id))?;
-        let values = it.values.as_object().cloned();
-        inputs.insert(id, (it.status, values));
+        inputs.insert(id, (it.status, it.values.as_object()));
     }
     Ok(assemble_tokens(&inputs, include_clearing, logo_base))
 }
 
-/// itemID → (status, values when fetched).
-pub type ItemInputs = BTreeMap<B256, (u8, Option<serde_json::Map<String, serde_json::Value>>)>;
+/// itemID → (status, the item's values when fetched), borrowed from the
+/// snapshot.
+pub type ItemInputs<'a> =
+    BTreeMap<B256, (u8, Option<&'a serde_json::Map<String, serde_json::Value>>)>;
 
 /// The part of the export that is pure computation, kept apart for tests:
-/// given proven statuses and fetched values, produce the sorted token set
-/// and the skip list. Duplicate (chainId, address) pairs keep the item with
-/// the lowest item id.
+/// given proven statuses and fetched values, produce the token set in its
+/// canonical (chainId, lowercase address) order and the skip list. Duplicate
+/// (chainId, address) pairs keep the item with the lowest item id.
 pub fn assemble_tokens(
-    items: &ItemInputs,
+    items: &ItemInputs<'_>,
     include_clearing: bool,
     logo_base: &str,
 ) -> (Vec<Token>, Vec<Skipped>) {
@@ -1470,54 +2071,14 @@ pub fn assemble_tokens(
             }),
         }
     }
-    let mut out: Vec<Token> = tokens.into_values().map(|(_, t)| t).collect();
-    sort_tokens(&mut out);
+    // The map's key is the canonical order (`sort_tokens`); no second sort.
+    let out: Vec<Token> = tokens.into_values().map(|(_, t)| t).collect();
     skipped.sort_by(|a, b| a.item_id.cmp(&b.item_id));
     (out, skipped)
 }
 
-/// Bounded, concurrent fetch of every included item's file.
-pub async fn fetch_all_files(
-    gateways: Arc<Gateways>,
-    paths: Vec<(B256, String)>,
-    concurrency: usize,
-) -> BTreeMap<B256, Result<ItemFile>> {
-    let sem = Arc::new(tokio::sync::Semaphore::new(concurrency.max(1)));
-    let mut set = tokio::task::JoinSet::new();
-    for (id, path) in paths {
-        let gws = gateways.clone();
-        let sem = sem.clone();
-        set.spawn(async move {
-            let _permit = sem.acquire_owned().await;
-            let mut last = None;
-            for attempt in 0..3u64 {
-                if attempt > 0 {
-                    tokio::time::sleep(std::time::Duration::from_millis(500 * attempt)).await;
-                }
-                match fetch_item_file(&gws, &path).await {
-                    Ok(v) => return (id, Ok(v)),
-                    Err(e) => last = Some(e),
-                }
-            }
-            (id, Err(last.unwrap_or_else(|| eyre!("no attempt"))))
-        });
-    }
-    let mut out = BTreeMap::new();
-    while let Some(joined) = set.join_next().await {
-        match joined {
-            Ok((id, r)) => {
-                out.insert(id, r);
-            }
-            Err(e) => {
-                out.insert(B256::ZERO, Err(eyre!("fetch task failed: {e}")));
-            }
-        }
-    }
-    out
-}
-
-/// keccak of the exact bytes a chunk of the pipeline produced — used for the
-/// provenance's `tokensSha256` (sha256, matching `sha256sum`).
+/// sha256 of the exact bytes a step of the pipeline produced — used for the
+/// provenance's output digests (matching `sha256sum`).
 pub fn sha256_hex(bytes: &[u8]) -> String {
     car::hex_lower(&Sha256::digest(bytes))
 }
@@ -1800,40 +2361,31 @@ mod tests {
         let id3 = b256!("0000000000000000000000000000000000000000000000000000000000000003");
         let id4 = b256!("0000000000000000000000000000000000000000000000000000000000000004");
         let id5 = b256!("0000000000000000000000000000000000000000000000000000000000000005");
-        let mut items = BTreeMap::new();
-        items.insert(
-            id2,
-            (
-                STATUS_REGISTERED,
-                Some(mk("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "18")),
-            ),
-        );
-        items.insert(
-            id1,
-            (
-                STATUS_REGISTERED,
-                Some(mk("0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "18")),
-            ),
-        ); // duplicate, lower id wins
-        items.insert(
-            id3,
-            (
-                STATUS_CLEARING_REQUESTED,
-                Some(mk("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "6")),
-            ),
-        );
+        let id6 = b256!("0000000000000000000000000000000000000000000000000000000000000006");
+        let v2 = mk("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "18");
+        let v1 = mk("0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "18"); // duplicate, lower id wins
+        let v3 = mk("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "6");
+        let v5 = mk("0xcccccccccccccccccccccccccccccccccccccccc", "999");
+        let v6 = mk("0x9999999999999999999999999999999999999999", "0");
+        let mut items: ItemInputs<'_> = BTreeMap::new();
+        items.insert(id2, (STATUS_REGISTERED, Some(&v2)));
+        items.insert(id1, (STATUS_REGISTERED, Some(&v1)));
+        items.insert(id3, (STATUS_CLEARING_REQUESTED, Some(&v3)));
         items.insert(id4, (STATUS_REGISTERED, None));
-        items.insert(
-            id5,
-            (
-                STATUS_REGISTERED,
-                Some(mk("0xcccccccccccccccccccccccccccccccccccccccc", "999")),
-            ),
-        );
+        items.insert(id5, (STATUS_REGISTERED, Some(&v5)));
+        items.insert(id6, (STATUS_REGISTERED, Some(&v6)));
         let (tokens, skipped) = assemble_tokens(&items, false, "ipfs://");
-        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens.len(), 2);
+        // Canonical order straight out of the map: (chainId, lowercase address).
+        let mut sorted = tokens.clone();
+        sort_tokens(&mut sorted);
+        assert_eq!(tokens, sorted);
         assert_eq!(
             tokens[0].address.to_lowercase(),
+            "0x9999999999999999999999999999999999999999"
+        );
+        assert_eq!(
+            tokens[1].address.to_lowercase(),
             "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         );
         let reasons: Vec<&str> = skipped.iter().map(|s| s.reason.as_str()).collect();
@@ -1848,7 +2400,7 @@ mod tests {
             .iter()
             .any(|s| s.item_id == id5.to_string() && s.reason.contains("out of range")));
         let (tokens, _) = assemble_tokens(&items, true, "ipfs://");
-        assert_eq!(tokens.len(), 2);
+        assert_eq!(tokens.len(), 3);
     }
 
     fn full(id: &str) -> String {
@@ -2078,5 +2630,402 @@ mod tests {
         assert!(
             parse_ipfs_path("/ipfs/QmWtvA69pfnBbkJvLS3TAJuevnKdb35NbrvTDuARQszAAv/../x").is_err()
         );
+    }
+
+    // ---------- content pipeline: a gateway on localhost ----------
+
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+
+    /// How the mock gateway answers one CID.
+    enum Behaviour {
+        Bytes(Vec<u8>),
+        /// A transient status for the first `n` requests, then the bytes.
+        FailFirst(usize, Vec<u8>),
+        /// Answer after a delay (a stalled gateway).
+        Stall(Duration, Vec<u8>),
+    }
+
+    /// A gateway serving `/ipfs/<cid>?format=raw` from a table, one thread per
+    /// connection, logging every CID requested in order.
+    fn mock_gateway(
+        table: HashMap<String, Behaviour>,
+    ) -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let table = Arc::new(std::sync::Mutex::new(table));
+        let log2 = log.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let log = log2.clone();
+                let table = table.clone();
+                std::thread::spawn(move || {
+                    let mut buf = [0u8; 8192];
+                    let n = stream.read(&mut buf).unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let line = req.lines().next().unwrap_or_default();
+                    let path = line.split_whitespace().nth(1).unwrap_or_default();
+                    let cid = path
+                        .trim_start_matches("/ipfs/")
+                        .split('?')
+                        .next()
+                        .unwrap_or_default()
+                        .to_string();
+                    log.lock().unwrap().push(cid.clone());
+                    let (code, body, delay) = {
+                        let mut t = table.lock().unwrap();
+                        match t.get_mut(&cid) {
+                            None => (404, Vec::new(), None),
+                            Some(Behaviour::Bytes(b)) => (200, b.clone(), None),
+                            Some(Behaviour::FailFirst(n, b)) => {
+                                if *n > 0 {
+                                    *n -= 1;
+                                    (503, Vec::new(), None)
+                                } else {
+                                    (200, b.clone(), None)
+                                }
+                            }
+                            Some(Behaviour::Stall(d, b)) => (200, b.clone(), Some(*d)),
+                        }
+                    };
+                    if let Some(d) = delay {
+                        std::thread::sleep(d);
+                    }
+                    let header = format!(
+                        "HTTP/1.1 {code} X\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = stream.write_all(header.as_bytes());
+                    let _ = stream.write_all(&body);
+                });
+            }
+        });
+        (format!("http://{addr}"), log)
+    }
+
+    fn raw_block(data: &[u8]) -> (Cid, String) {
+        let c = Cid::for_block(0x55, data);
+        (c, c.to_string_canonical())
+    }
+
+    fn pb_block(bytes: &[u8]) -> (Cid, String) {
+        let c = Cid::for_block(0x70, bytes);
+        (c, c.to_string_v0().unwrap())
+    }
+
+    fn fast_budget() -> ItemBudget {
+        ItemBudget {
+            retry_backoff: Duration::from_millis(1),
+            block_timeout: Duration::from_secs(5),
+            ..Default::default()
+        }
+    }
+
+    fn item_id(i: u64) -> B256 {
+        B256::from(U256::from(i).to_be_bytes::<32>())
+    }
+
+    fn requests_for(log: &std::sync::Mutex<Vec<String>>, cid: &str) -> usize {
+        log.lock()
+            .unwrap()
+            .iter()
+            .filter(|c| c.as_str() == cid)
+            .count()
+    }
+
+    #[tokio::test]
+    async fn repeated_links_to_one_block_are_fetched_once_and_budgeted() {
+        let (empty, empty_text) = raw_block(b"");
+        let small = car::encode_chunked_file(&vec![(empty, 0); 100]);
+        let (small_cid, small_text) = pb_block(&small);
+        let big = car::encode_chunked_file(&vec![(empty, 0); 1000]);
+        let (big_cid, big_text) = pb_block(&big);
+        let mut table = HashMap::new();
+        table.insert(empty_text.clone(), Behaviour::Bytes(Vec::new()));
+        table.insert(small_text, Behaviour::Bytes(small));
+        table.insert(big_text.clone(), Behaviour::Bytes(big));
+        let (url, log) = mock_gateway(table);
+        let fetcher = Fetcher::new(&[url], 4).with_budget(fast_budget());
+
+        // 100 links to one empty block: the block is fetched once, the file is empty.
+        let mut work = ItemWork::new(fetcher.budget());
+        let bytes = fetcher
+            .fetch_item_bytes(small_cid, &[], &mut work)
+            .await
+            .unwrap();
+        assert!(bytes.is_empty());
+        assert_eq!(work.blocks, 101, "every link is a visit, cache hit or not");
+        assert_eq!(work.attempts, 2);
+        assert_eq!(
+            log.lock().unwrap().len(),
+            2,
+            "the root and the empty block, once each"
+        );
+        assert_eq!(fetcher.counts().cache_hits, 99);
+
+        // 1000 links: the block budget ends the walk; the network saw only the new root.
+        let mut work = ItemWork::new(fetcher.budget());
+        let err = fetcher
+            .fetch_item_bytes(big_cid, &[], &mut work)
+            .await
+            .unwrap_err();
+        assert!(!err.is_transient());
+        assert!(
+            err.to_string()
+                .contains(&format!("more than {ITEM_MAX_BLOCKS} blocks")),
+            "{err}"
+        );
+        assert_eq!(work.blocks, ITEM_MAX_BLOCKS + 1);
+        assert_eq!(log.lock().unwrap().len(), 3);
+        assert_eq!(requests_for(&log, &empty_text), 1);
+    }
+
+    #[tokio::test]
+    async fn hash_verified_invalid_json_is_not_refetched() {
+        let body = b"not json at all".to_vec();
+        let (_, text) = raw_block(&body);
+        let (url, log) = mock_gateway(HashMap::from([(text.clone(), Behaviour::Bytes(body))]));
+        let fetcher = Arc::new(Fetcher::new(&[url], 2).with_budget(fast_budget()));
+        let id = item_id(1);
+        let out = fetch_all_files(fetcher.clone(), vec![(id, format!("/ipfs/{text}"))], 2).await;
+        let err = format!("{:#}", out[&id].as_ref().unwrap_err());
+        assert!(err.contains("item JSON"), "{err}");
+        assert_eq!(
+            requests_for(&log, &text),
+            1,
+            "verified bytes that do not parse are permanent: downloaded once"
+        );
+        assert_eq!(fetcher.counts().item_retries, 0);
+        assert_eq!(fetcher.counts().requests, 1);
+    }
+
+    #[tokio::test]
+    async fn transient_failure_on_a_later_chunk_reuses_earlier_blocks() {
+        let json = br#"{"columns":[],"values":{"Name":"chunked"}}"#;
+        let (c1_data, c2_data) = json.split_at(12);
+        let (c1, t1) = raw_block(c1_data);
+        let (c2, t2) = raw_block(c2_data);
+        let root =
+            car::encode_chunked_file(&[(c1, c1_data.len() as u64), (c2, c2_data.len() as u64)]);
+        let (_, root_text) = pb_block(&root);
+        let mut table = HashMap::new();
+        table.insert(root_text.clone(), Behaviour::Bytes(root));
+        table.insert(t1.clone(), Behaviour::Bytes(c1_data.to_vec()));
+        table.insert(t2.clone(), Behaviour::FailFirst(1, c2_data.to_vec()));
+        let (url, log) = mock_gateway(table);
+        let fetcher = Arc::new(Fetcher::new(&[url], 2).with_budget(fast_budget()));
+        let id = item_id(2);
+        let out =
+            fetch_all_files(fetcher.clone(), vec![(id, format!("/ipfs/{root_text}"))], 2).await;
+        let file = out[&id].as_ref().unwrap();
+        assert_eq!(file.values["Name"], "chunked");
+        assert_eq!(
+            requests_for(&log, &root_text),
+            1,
+            "the root was verified once"
+        );
+        assert_eq!(
+            requests_for(&log, &t1),
+            1,
+            "the first chunk was verified once"
+        );
+        assert_eq!(
+            requests_for(&log, &t2),
+            2,
+            "only the unavailable chunk was asked again"
+        );
+        let c = fetcher.counts();
+        assert_eq!(c.item_retries, 1);
+        assert_eq!(
+            c.cache_hits, 2,
+            "the retry round replayed the root and chunk 1 from the cache"
+        );
+        assert_eq!(c.requests, 4);
+    }
+
+    #[tokio::test]
+    async fn wrong_bytes_from_one_gateway_fail_over_and_demote_it() {
+        let correct = br#"{"values":{}}"#.to_vec();
+        let (cid, text) = raw_block(&correct);
+        let (bad_url, bad_log) = mock_gateway(HashMap::from([(
+            text.clone(),
+            Behaviour::Bytes(b"tampered".to_vec()),
+        )]));
+        let (good_url, _) =
+            mock_gateway(HashMap::from([(text, Behaviour::Bytes(correct.clone()))]));
+        let fetcher = Fetcher::new(&[bad_url, good_url], 2).with_budget(fast_budget());
+        let mut work = ItemWork::new(fetcher.budget());
+        let bytes = fetcher.fetch_item_bytes(cid, &[], &mut work).await.unwrap();
+        assert_eq!(bytes, correct);
+        assert_eq!(fetcher.counts().bad_bytes, 1);
+        assert_eq!(work.attempts, 2);
+        assert_eq!(bad_log.lock().unwrap().len(), 1);
+        assert_eq!(
+            fetcher.gateways().ordered(),
+            vec![1, 0],
+            "the gateway that served wrong bytes is tried last from now on"
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_misses_for_one_block_coalesce_into_one_fetch() {
+        let json = br#"{"values":{"k":"v"}}"#.to_vec();
+        let (_, text) = raw_block(&json);
+        let (url, log) = mock_gateway(HashMap::from([(
+            text.clone(),
+            Behaviour::Stall(Duration::from_millis(100), json),
+        )]));
+        let fetcher = Arc::new(Fetcher::new(&[url], 4).with_budget(fast_budget()));
+        let path = format!("/ipfs/{text}");
+        let out = fetch_all_files(
+            fetcher.clone(),
+            vec![(item_id(1), path.clone()), (item_id(2), path)],
+            4,
+        )
+        .await;
+        assert!(out.values().all(|r| r.is_ok()));
+        assert_eq!(log.lock().unwrap().len(), 1, "one fetch served both items");
+        let c = fetcher.counts();
+        assert_eq!((c.requests, c.coalesced, c.cache_hits), (1, 1, 0));
+    }
+
+    #[tokio::test]
+    async fn time_budget_bounds_a_stalled_gateway_and_shortens_the_request_deadline() {
+        let body = b"x".to_vec();
+        let (_, text) = raw_block(&body);
+        let (url, _) = mock_gateway(HashMap::from([(
+            text.clone(),
+            Behaviour::Stall(Duration::from_secs(20), body),
+        )]));
+        let budget = ItemBudget {
+            time: Duration::from_millis(300),
+            block_timeout: Duration::from_secs(30),
+            retry_backoff: Duration::from_millis(1),
+            ..Default::default()
+        };
+        let fetcher = Arc::new(Fetcher::new(&[url], 1).with_budget(budget));
+        let id = item_id(3);
+        let started = Instant::now();
+        let out = fetch_all_files(fetcher.clone(), vec![(id, format!("/ipfs/{text}"))], 1).await;
+        let err = format!("{:#}", out[&id].as_ref().unwrap_err());
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the request deadline must be what is left of the item's budget, not the 30 s block timeout ({err})"
+        );
+        assert!(
+            err.contains("budget") || err.contains("timed out") || err.contains("no gateway"),
+            "{err}"
+        );
+    }
+
+    // ---------- bounded scheduling ----------
+
+    #[tokio::test]
+    async fn run_bounded_admits_at_most_concurrency_tasks() {
+        let items: Vec<(B256, String)> = (1..=1000u64)
+            .map(|i| (item_id(i), format!("/ipfs/{i}")))
+            .collect();
+        let admitted = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let out = run_bounded(items, 8, |_id, _path, _state: Option<()>| {
+            // Counted when the task is admitted (spawned), released when it ends.
+            let now = admitted.fetch_add(1, AtomicOrdering::SeqCst) + 1;
+            peak.fetch_max(now, AtomicOrdering::SeqCst);
+            let admitted = admitted.clone();
+            async move {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+                admitted.fetch_sub(1, AtomicOrdering::SeqCst);
+                Round::Done(())
+            }
+        })
+        .await;
+        assert_eq!(out.len(), 1000);
+        assert!(out.values().all(|r| r.is_ok()));
+        assert_eq!(
+            peak.load(AtomicOrdering::SeqCst),
+            8,
+            "admitted tasks, not just permit holders, stay at the limit"
+        );
+        assert_eq!(admitted.load(AtomicOrdering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn run_bounded_records_a_task_failure_under_its_item_id() {
+        let ids = [item_id(1), item_id(2), item_id(3)];
+        let items: Vec<(B256, String)> = ids.iter().map(|i| (*i, format!("/ipfs/{i}"))).collect();
+        let out = run_bounded(items, 2, |id, _path, _state: Option<()>| async move {
+            if id == ids[1] {
+                panic!("injected task failure");
+            }
+            Round::Done(id)
+        })
+        .await;
+        assert_eq!(out.len(), 3);
+        assert!(!out.contains_key(&B256::ZERO), "no sentinel entry");
+        assert_eq!(*out[&ids[0]].as_ref().unwrap(), ids[0]);
+        assert_eq!(*out[&ids[2]].as_ref().unwrap(), ids[2]);
+        let err = format!("{:#}", out[&ids[1]].as_ref().unwrap_err());
+        assert!(err.contains("fetch task failed"), "{err}");
+
+        // The snapshot records the failure on that item and counts it.
+        let paths: BTreeMap<B256, String> =
+            ids.iter().map(|i| (*i, format!("/ipfs/{i}"))).collect();
+        let statuses: BTreeMap<B256, u8> = ids.iter().map(|i| (*i, STATUS_REGISTERED)).collect();
+        let mut fetched: BTreeMap<B256, Result<ItemFile>> = out
+            .into_iter()
+            .map(|(k, v)| {
+                (
+                    k,
+                    v.map(|_| ItemFile {
+                        columns: serde_json::Value::Null,
+                        values: serde_json::Map::new(),
+                    }),
+                )
+            })
+            .collect();
+        let filter = StatusFilter {
+            pending: false,
+            all: false,
+        };
+        let (records, failures) = records_from(&paths, &statuses, &filter, &mut fetched);
+        assert_eq!(failures, 1);
+        assert_eq!(records.len(), 3);
+        let failed = records
+            .iter()
+            .find(|r| r.item_id == ids[1].to_string())
+            .unwrap();
+        assert!(failed
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("fetch task failed"));
+        assert!(failed.values.is_null());
+        assert_eq!(records.iter().filter(|r| r.error.is_none()).count(), 2);
+        assert!(fetched.is_empty(), "payloads moved into the records");
+    }
+
+    #[tokio::test]
+    async fn run_bounded_carries_retry_state_through_the_delayed_queue() {
+        let id = item_id(7);
+        let started = Instant::now();
+        let out = run_bounded(
+            vec![(id, "/ipfs/x".into())],
+            1,
+            |_id, _path, state: Option<u32>| async move {
+                match state {
+                    None => Round::Retry {
+                        after: Duration::from_millis(20),
+                        state: 1,
+                    },
+                    Some(n) => Round::Done(n + 1),
+                }
+            },
+        )
+        .await;
+        assert_eq!(*out[&id].as_ref().unwrap(), 2);
+        assert!(started.elapsed() >= Duration::from_millis(20));
     }
 }

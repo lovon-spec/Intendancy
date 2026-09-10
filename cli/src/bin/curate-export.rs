@@ -82,6 +82,10 @@ struct SourceArgs {
     /// First block to scan for NewItem logs (preset's creation block, else discovered).
     #[arg(long)]
     from_block: Option<u64>,
+    /// Anchor at this finalized height instead of the current one: a rerun at
+    /// an earlier export's anchor, which must reproduce it byte for byte.
+    #[arg(long)]
+    anchor_block: Option<u64>,
     /// Log window in blocks (halved on RPC failure).
     #[arg(long, default_value_t = 1_000_000)]
     log_window: u64,
@@ -138,6 +142,7 @@ impl SourceArgs {
             provider_rpc: self.provider_rpc.clone(),
             gateways: self.gateways.clone(),
             from_block,
+            anchor_block: self.anchor_block,
             log_window: self.log_window,
             concurrency: self.concurrency,
             filter: StatusFilter {
@@ -278,6 +283,9 @@ async fn run_export(
         skipped,
         output_sha256: lgtcr::sha256_hex(&bytes),
         rpc_calls: outcome.rpc_calls,
+        rpc: outcome.rpc,
+        ipfs: outcome.ipfs,
+        stage_seconds: outcome.stages,
         elapsed_seconds: started.elapsed().as_secs_f64(),
         tool_version: env!("CARGO_PKG_VERSION").into(),
         command_line: command_line(),
@@ -315,6 +323,9 @@ async fn export(a: ExportArgs) -> Result<()> {
             "included": outcome.snapshot.items.len(),
             "fetchFailures": outcome.fetch_failures,
             "rpcCalls": outcome.rpc_calls,
+            "rpc": outcome.rpc,
+            "ipfs": outcome.ipfs,
+            "stageSeconds": outcome.stages,
             "out": a.out.display().to_string(),
             "outputSha256": lgtcr::sha256_hex(&bytes),
             "provenance": a.provenance.display().to_string(),
