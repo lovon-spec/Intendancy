@@ -33,9 +33,9 @@ CE="$HOME/.intend/bin/curate-export"
 "$CE" export --registry address-tags --out items.json --provenance provenance.json --csv items.csv
 ```
 
-Presets: `tokens`, `address-tags`, `atq`, `cdn`. Any other Light list needs `--list <address>` and `--items-slot`, plus `--chain-id` and `--genesis` off Gnosis. By default the snapshot holds Registered and ClearingRequested items; add `--include-pending` for the entries under review, which is what a challenger wants to inspect, or `--all` for everything.
+Presets: `tokens`, `address-tags`, `atq`, `cdn`, each one deployment on Gnosis. Any other Light list needs `--list <address>` and `--items-slot`, plus `--chain-id` and `--genesis` off Gnosis; a preset name is not combined with another address or chain. `--anchor-block <n>` reruns at an earlier export's anchor and reproduces its `items.json` byte for byte. By default the snapshot holds Registered and ClearingRequested items; add `--include-pending` for the entries under review, which is what a challenger wants to inspect, or `--all` for everything.
 
-Read the JSON line the command prints: `ok` must be `true`; `anchorMode` names the anchor; `byStatus` is the proven status histogram; `fetchFailures` counts item files no gateway could serve. Report the anchor block and mode whenever you hand the snapshot to anyone. Each item in `items.json` carries its id, status, IPFS path, and the item file's `columns` and `values` verbatim; `items.csv` flattens the values by column label for spreadsheets.
+Read the JSON line the command prints: `ok` must be `true`; `anchorMode` names the anchor; `byStatus` is the proven status histogram; `fetchFailures` counts item files no gateway could serve. Report the anchor block and mode whenever you hand the snapshot to anyone; `rpc`, `ipfs` and `stageSeconds` say what the run measured. Each item in `items.json` carries its id, status, IPFS path, and the item file's `columns` and `values` verbatim; `items.csv` flattens the values by column label for spreadsheets.
 
 ## 3. Query offline
 
@@ -53,7 +53,7 @@ Read the JSON line the command prints: `ok` must be `true`; `anchorMode` names t
 "$CE" tokenlist --items tokens-items.json --compare https://t2crtokens.eth.limo/ --out tokens.json --diff-out diff.json --skipped-out skipped.json
 ```
 
-Renders a Tokens-list snapshot into the Uniswap token-lists schema (chain id and EIP-55 address from the rich address, validated decimals, `ipfs://` logos), deterministically. `--previous` applies token-lists versioning; `--compare` writes a diff: tokens only in ours, only in theirs, metadata differences. A token in ours and absent in theirs is one the other export dropped; the provenance proves ours was Registered at the anchor. An item whose Address has no `eip155:` namespace (the list also holds Solana tokens) is skipped with a recorded reason (`--skipped-out` writes the list), the rule Kleros's own exporter applied; no chain is guessed for an address without one.
+Renders a Tokens-list snapshot into the Uniswap token-lists schema (chain id and EIP-55 address from the rich address, validated decimals, `ipfs://` logos), deterministically, named `Kleros Tokens Verified` unless `--name` gives another name the schema accepts (letters, digits, underscore, space; up to 30 characters); the output is validated against the schema before it is written. `--previous` applies token-lists versioning; `--compare` writes a diff: tokens only in ours, only in theirs, metadata differences. A token in ours and absent in theirs is one the other export dropped; the provenance proves ours was Registered at the anchor. An item whose Address has no `eip155:` namespace (the list also holds Solana tokens) is skipped with a recorded reason (`--skipped-out` writes the list), the rule Kleros's own exporter applied; no chain is guessed for an address without one.
 
 ## 5. Publish
 
