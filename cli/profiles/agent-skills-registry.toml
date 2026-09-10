@@ -28,3 +28,12 @@ clearing_meta_evidence = "/ipfs/bafybeihnkauoj3okjd5lmgsbow6hrigxvf5yw6dfvmgzpcn
 provider_rpc = "https://gnosis-rpc.publicnode.com"
 # Untrusted CAR gateways, tried in order; every block is hash-verified.
 gateways = ["https://trustless-gateway.link", "https://dweb.link", "https://ipfs.io"]
+
+# Policy versions accepted beyond the deployment one. Version 1 is listing policy 2.3, scheduled through
+# the governor timelock on 2026-09 (see tools/launch/README.md, "Policy version 1"); the registry reports
+# it as metaEvidenceUpdates = 1 once the operation executes. Adding an entry here changes the deployment
+# context: installs made under the previous profile are carried over with `intend migrate --from`.
+[[policy_updates]]
+updates = 1
+registration_meta_evidence = "/ipfs/bafybeifhlfq6wtjhmnywfklavuj2jr57nyawwfpcepccwgxadisrdjnvce/registration-meta-evidence.json"
+clearing_meta_evidence = "/ipfs/bafybeifgs26pc2yuvt34bs6gjavtg7ke563fov22aoyojs6z6fdckzehm4/clearing-meta-evidence.json"
