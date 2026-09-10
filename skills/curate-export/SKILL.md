@@ -21,6 +21,8 @@ sh scripts/install-curate-export.sh
 
 The installer downloads one fixed release, requires the release signing key to match the pinned fingerprint and every signature to be made under it, checks the archive and the extracted executable against the digests pinned in the script, and installs `$INTEND_HOME/bin/curate-export` (default `~/.intend`). On any mismatch it installs nothing; stop, and do not obtain the binary another way.
 
+Until a release ships `curate-export`, the installer's version and digest pins are `PENDING_RELEASE` placeholders and the script refuses to run; this skill is not submitted to the registry before that release pins them.
+
 ```sh
 CE="$HOME/.intend/bin/curate-export"
 ```
