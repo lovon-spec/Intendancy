@@ -71,11 +71,19 @@ pub const MAX_REFERENCE_BYTES: u64 = 32 * 1024 * 1024;
 
 // ---------- presets ----------
 
-/// A Light Curate list this tool knows by name.
+/// Gnosis: chain id 100 and its genesis hash, the chain every preset lives on.
+pub const GNOSIS_CHAIN_ID: u64 = 100;
+pub const GNOSIS_GENESIS: B256 =
+    alloy::primitives::b256!("4f1dd23188aab3a76b463e4af801b52b1248ef073c648cbdc4c9333d3da79756");
+
+/// A Light Curate list this tool knows by name: one deployment, on one
+/// chain. Its slot, creation block and label hold for that deployment only.
 #[derive(Debug, Clone, Copy)]
 pub struct Preset {
     pub name: &'static str,
     pub title: &'static str,
+    pub chain_id: u64,
+    pub genesis: B256,
     pub list: Address,
     pub items_slot: u64,
     /// The list's creation block (binary-searched on code presence,
@@ -89,6 +97,8 @@ pub const PRESETS: &[Preset] = &[
     Preset {
         name: "address-tags",
         title: "Address Tags",
+        chain_id: GNOSIS_CHAIN_ID,
+        genesis: GNOSIS_GENESIS,
         list: alloy::primitives::address!("66260C69d03837016d88c9877e61e08Ef74C59F2"),
         items_slot: 10,
         from_block: 28_182_134,
@@ -96,6 +106,8 @@ pub const PRESETS: &[Preset] = &[
     Preset {
         name: "tokens",
         title: "Tokens",
+        chain_id: GNOSIS_CHAIN_ID,
+        genesis: GNOSIS_GENESIS,
         list: alloy::primitives::address!("eE1502e29795Ef6C2D60F8D7120596abE3baD990"),
         items_slot: 10,
         from_block: 30_214_545,
@@ -103,6 +115,8 @@ pub const PRESETS: &[Preset] = &[
     Preset {
         name: "cdn",
         title: "Contract Domain Names",
+        chain_id: GNOSIS_CHAIN_ID,
+        genesis: GNOSIS_GENESIS,
         list: alloy::primitives::address!("957A53A994860BE4750810131d9c876b2f52d6E1"),
         items_slot: 10,
         from_block: 25_810_767,
@@ -110,6 +124,8 @@ pub const PRESETS: &[Preset] = &[
     Preset {
         name: "atq",
         title: "Address Tags Query",
+        chain_id: GNOSIS_CHAIN_ID,
+        genesis: GNOSIS_GENESIS,
         list: alloy::primitives::address!("Ae6aaed5434244be3699c56E7Ebc828194F26dc3"),
         items_slot: 10,
         from_block: 33_674_138,
@@ -2014,6 +2030,10 @@ pub struct Provenance {
     #[serde(rename = "codeHash")]
     pub code_hash: String,
     pub anchor: ProvenanceAnchor,
+    /// How the anchor height was chosen (the current finalized head, or
+    /// pinned by --anchor-block for a rerun at an earlier export's anchor).
+    #[serde(rename = "anchorSource", default)]
+    pub anchor_source: String,
     #[serde(rename = "anchorRpcs")]
     pub anchor_rpcs: Vec<String>,
     #[serde(rename = "logRpcs")]
@@ -2092,7 +2112,10 @@ pub struct ExportOutcome {
     pub rpc: RpcCounts,
     pub ipfs: IpfsCounts,
     pub stages: StageSeconds,
+    /// The trust mode of the anchor (a header quorum).
     pub anchor_mode: String,
+    /// How its height was chosen: the current finalized head, or pinned.
+    pub anchor_source: String,
 }
 
 /// Every step of a verified Light-list export, fail-closed. `progress` gets
@@ -2144,14 +2167,15 @@ pub async fn export_list(
         .iter()
         .map(|rpc| sources[rpc].clone())
         .collect();
-    let (quorum, anchor_mode) = match cfg.anchor_block {
+    let anchor_mode = "header-quorum (alpha)".to_string();
+    let (quorum, anchor_source) = match cfg.anchor_block {
         None => (
             anchor::finalized_quorum_sources(&anchor_sources).await?,
-            "header-quorum (alpha)".to_string(),
+            "current finalized head".to_string(),
         ),
         Some(number) => (
             anchor::pinned_quorum_sources(&anchor_sources, number).await?,
-            "header-quorum at a pinned finalized height (alpha)".to_string(),
+            format!("pinned by --anchor-block {number}"),
         ),
     };
     if quorum.state_root == B256::ZERO {
@@ -2301,6 +2325,7 @@ pub async fn export_list(
         ipfs,
         stages,
         anchor_mode,
+        anchor_source,
     })
 }
 
@@ -3035,6 +3060,9 @@ mod tests {
         assert!(PRESETS
             .iter()
             .all(|p| p.items_slot == 10 && p.from_block > 0));
+        assert!(PRESETS
+            .iter()
+            .all(|p| p.chain_id == GNOSIS_CHAIN_ID && p.genesis == GNOSIS_GENESIS));
         assert_eq!(
             preset("tokens").unwrap().list.to_checksum(None),
             "0xeE1502e29795Ef6C2D60F8D7120596abE3baD990"

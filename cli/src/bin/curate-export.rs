@@ -120,15 +120,62 @@ impl SourceArgs {
             (None, Some(p)) => p.list,
             (None, None) => bail!("give --registry <name> or --list <address>"),
         };
-        let items_slot = self
-            .items_slot
-            .or(preset.map(|p| p.items_slot))
-            .unwrap_or(10);
+        let genesis: B256 = self.genesis.parse().wrap_err("--genesis")?;
+        if let Some(p) = preset {
+            // A preset is one deployment on one chain. Its creation block,
+            // items slot and label hold for that deployment only; another
+            // address or chain under its name would inherit a start block
+            // that hides earlier items, a storage layout it may not have, and
+            // a label that is not its own. Refuse the combination.
+            let mut conflicts = Vec::new();
+            if list != p.list {
+                conflicts.push(format!(
+                    "--list {} is not the {} list {}",
+                    list.to_checksum(None),
+                    p.name,
+                    p.list.to_checksum(None)
+                ));
+            }
+            if self.chain_id != p.chain_id {
+                conflicts.push(format!(
+                    "--chain-id {} is not the preset's chain {}",
+                    self.chain_id, p.chain_id
+                ));
+            }
+            if genesis != p.genesis {
+                conflicts.push(format!(
+                    "--genesis {genesis} is not the preset's genesis {}",
+                    p.genesis
+                ));
+            }
+            if let Some(slot) = self.items_slot {
+                if slot != p.items_slot {
+                    conflicts.push(format!(
+                        "--items-slot {slot} is not the preset's slot {}",
+                        p.items_slot
+                    ));
+                }
+            }
+            if !conflicts.is_empty() {
+                bail!(
+                    "--registry {} names one deployment: {}. For another deployment drop --registry and give --list, --items-slot, --chain-id and --genesis; the start block is then discovered unless --from-block is given",
+                    p.name,
+                    conflicts.join("; ")
+                );
+            }
+        }
+        let items_slot = match (self.items_slot, preset) {
+            (Some(slot), _) => slot,
+            (None, Some(p)) => p.items_slot,
+            (None, None) => bail!(
+                "--items-slot is required with --list: the storage slot of the list's `items` mapping (10 for LightGeneralizedTCR as the Kleros Scout lists deploy it; verify it for any other contract)"
+            ),
+        };
         let from_block = self.from_block.or(preset.map(|p| p.from_block));
         Ok(ExportConfig {
             pin: ChainPin {
                 chain_id: self.chain_id,
-                genesis_hash: self.genesis.parse().wrap_err("--genesis")?,
+                genesis_hash: genesis,
             },
             list,
             registry: preset.map(|p| p.name.to_string()),
@@ -268,6 +315,7 @@ async fn run_export(
         items_slot: cfg.items_slot,
         code_hash: format!("{}", outcome.code_hash),
         anchor: outcome.snapshot.anchor.clone(),
+        anchor_source: outcome.anchor_source.clone(),
         anchor_rpcs: cfg.anchor_rpcs.clone(),
         log_rpcs: cfg.log_rpcs.clone(),
         provider_rpc: cfg.provider_rpc.clone(),
@@ -318,6 +366,7 @@ async fn export(a: ExportArgs) -> Result<()> {
             "anchorBlock": outcome.anchor.block_number,
             "anchorBlockHash": outcome.anchor.block_hash,
             "anchorMode": outcome.anchor_mode,
+            "anchorSource": outcome.anchor_source,
             "fromBlock": outcome.from_block,
             "logs": outcome.logs,
             "uniqueItems": outcome.unique_items,
@@ -478,4 +527,116 @@ fn lookup(a: LookupArgs) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn source(args: &[&str]) -> SourceArgs {
+        let argv: Vec<&str> = ["curate-export", "export"]
+            .into_iter()
+            .chain(args.iter().copied())
+            .collect();
+        match Cli::try_parse_from(argv).unwrap().cmd {
+            Cmd::Export(a) => a.source,
+            _ => unreachable!(),
+        }
+    }
+
+    const OTHER: &str = "0x0000000000000000000000000000000000000001";
+
+    #[test]
+    fn preset_defaults_apply_only_to_the_presets_deployment() {
+        let cfg = source(&["--registry", "tokens"]).config().unwrap();
+        assert_eq!(
+            (cfg.items_slot, cfg.from_block, cfg.registry.as_deref()),
+            (10, Some(30_214_545), Some("tokens"))
+        );
+        assert_eq!(cfg.pin.chain_id, 100);
+
+        // The preset's own address, given explicitly, is not a conflict.
+        let cfg = source(&[
+            "--registry",
+            "tokens",
+            "--list",
+            "0xeE1502e29795Ef6C2D60F8D7120596abE3baD990",
+            "--items-slot",
+            "10",
+        ])
+        .config()
+        .unwrap();
+        assert_eq!(
+            (cfg.from_block, cfg.registry.as_deref()),
+            (Some(30_214_545), Some("tokens"))
+        );
+
+        // An older replacement deployment under the preset's name would
+        // inherit the later creation block and the label: refused.
+        let err = source(&["--registry", "tokens", "--list", OTHER])
+            .config()
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("names one deployment") && err.contains("--list"),
+            "{err}"
+        );
+        // So would another chain, another genesis, another slot.
+        for extra in [
+            ["--chain-id", "1"],
+            [
+                "--genesis",
+                "0x0000000000000000000000000000000000000000000000000000000000000001",
+            ],
+            ["--items-slot", "11"],
+        ] {
+            let err = source(&["--registry", "tokens", extra[0], extra[1]])
+                .config()
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.contains("names one deployment") && err.contains(extra[0]),
+                "{err}"
+            );
+        }
+
+        // A custom list carries no preset defaults: the slot is explicit, the
+        // start block is discovered unless given, and there is no label.
+        let err = source(&["--list", OTHER]).config().unwrap_err().to_string();
+        assert!(err.contains("--items-slot is required"), "{err}");
+        let cfg = source(&["--list", OTHER, "--items-slot", "10"])
+            .config()
+            .unwrap();
+        assert_eq!(
+            (cfg.items_slot, cfg.from_block, cfg.registry),
+            (10, None, None)
+        );
+        let cfg = source(&["--list", OTHER, "--items-slot", "7", "--from-block", "5"])
+            .config()
+            .unwrap();
+        assert_eq!((cfg.items_slot, cfg.from_block), (7, Some(5)));
+        assert!(source(&[]).config().is_err());
+    }
+
+    #[test]
+    fn default_chain_pin_is_the_presets_chain() {
+        assert_eq!(
+            DEFAULT_GENESIS.parse::<B256>().unwrap(),
+            lgtcr::GNOSIS_GENESIS
+        );
+        assert_eq!(
+            source(&["--registry", "atq"]).chain_id,
+            lgtcr::GNOSIS_CHAIN_ID
+        );
+    }
+
+    #[test]
+    fn tokenlist_default_name_is_schema_valid() {
+        let argv = ["curate-export", "tokenlist", "--items", "x.json"];
+        let Cmd::Tokenlist(a) = Cli::try_parse_from(argv).unwrap().cmd else {
+            unreachable!()
+        };
+        assert_eq!(a.name, "Kleros Tokens Verified");
+        lgtcr::validate_list_name(&a.name).unwrap();
+    }
 }
