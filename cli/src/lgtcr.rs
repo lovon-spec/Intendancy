@@ -346,10 +346,188 @@ pub struct Enumeration {
     pub mismatched: Vec<(B256, String)>,
     /// eth_getLogs calls made (windows, retries included).
     pub rpc_calls: u64,
+    /// Calls repeated at the same window after a transient failure.
+    pub retries: u64,
+    /// Window reductions after a range or result-size limit.
+    pub shrinks: u64,
+    /// Window doublings after sustained success.
+    pub grows: u64,
 }
 
-/// Fetch every `NewItem` log of `list` in `[from, to]` from one RPC, in
-/// windows that halve on failure, and check each path against its id.
+/// No window shrinks below this many blocks.
+pub const LOG_MIN_WINDOW: u64 = 1000;
+/// Same-window retries of a transient failure before the scan gives up.
+pub const LOG_TRANSIENT_RETRIES: u32 = 3;
+/// Backoff before the first such retry; it doubles per retry.
+pub const LOG_RETRY_BACKOFF: Duration = Duration::from_secs(1);
+/// Consecutive successful windows before a shrunken window doubles again.
+pub const LOG_GROW_AFTER: u32 = 8;
+
+/// How the log scan sizes its windows and treats failures.
+#[derive(Debug, Clone, Copy)]
+pub struct LogWindowPolicy {
+    /// The configured window, and the ceiling growth returns to.
+    pub window: u64,
+    pub min_window: u64,
+    pub transient_retries: u32,
+    pub backoff: Duration,
+    pub grow_after: u32,
+}
+
+impl LogWindowPolicy {
+    pub fn new(window: u64) -> Self {
+        Self {
+            window: window.max(1),
+            min_window: LOG_MIN_WINDOW,
+            transient_retries: LOG_TRANSIENT_RETRIES,
+            backoff: LOG_RETRY_BACKOFF,
+            grow_after: LOG_GROW_AFTER,
+        }
+    }
+}
+
+/// What a failed `eth_getLogs` call says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogError {
+    /// The source refuses the range or the result size; `named` is the limit
+    /// it states, when it states one in a recognised form.
+    RangeLimit { named: Option<u64> },
+    /// The request did not complete in time.
+    Timeout,
+    /// Anything else (a rate limit, a 5xx, a dropped connection).
+    Transient,
+}
+
+/// Classify an `eth_getLogs` failure from its message. Recognised limit
+/// formats name the limit: `exceed maximum block range: 50000` (PublicNode),
+/// `limited to a 10,000 blocks range` (QuickNode), `up to a 2K block range`
+/// (Alchemy), `max 1000 blocks`, and a suggested range `[0x…, 0x…]` (Infura,
+/// Alchemy), whose size is the limit. Other messages about the range or the
+/// result size are limits without a number; a number elsewhere in the
+/// message (a request id, a block number) is never taken for the limit.
+pub fn classify_log_error(message: &str) -> LogError {
+    let m = message.to_ascii_lowercase();
+    if let Some(n) = suggested_range(&m).or_else(|| named_limit(&m)) {
+        return LogError::RangeLimit { named: Some(n) };
+    }
+    const LIMIT_PHRASES: &[&str] = &[
+        "block range",
+        "range too large",
+        "range is too large",
+        "range too wide",
+        "range is too wide",
+        "range too big",
+        "too many results",
+        "returned more than",
+        "response size exceeded",
+        "exceeds max results",
+        "exceed max results",
+        "result set too large",
+        "too many logs",
+        "log limit",
+        "logs limit",
+    ];
+    if LIMIT_PHRASES.iter().any(|p| m.contains(p)) {
+        return LogError::RangeLimit { named: None };
+    }
+    const TIMEOUT_PHRASES: &[&str] = &[
+        "deadline",
+        "timed out",
+        "timeout",
+        "time out",
+        "http 408",
+        "http 504",
+        "gateway time",
+    ];
+    if TIMEOUT_PHRASES.iter().any(|p| m.contains(p)) {
+        return LogError::Timeout;
+    }
+    LogError::Transient
+}
+
+/// The size of a suggested `[0x…, 0x…]` block range in the message.
+fn suggested_range(m: &str) -> Option<u64> {
+    let open = m.find("[0x")?;
+    let close = m[open..].find(']')? + open;
+    let inner = &m[open + 1..close];
+    let (a, b) = inner.split_once(',')?;
+    let parse = |s: &str| u64::from_str_radix(s.trim().strip_prefix("0x")?, 16).ok();
+    let (a, b) = (parse(a)?, parse(b)?);
+    (b >= a).then_some(b - a + 1)
+}
+
+/// A limit stated next to the words `range`, `block` or `blocks`, in a
+/// message that speaks of a limit at all.
+fn named_limit(m: &str) -> Option<u64> {
+    // "10,000" is one number; "2k" is two thousand.
+    let mut cleaned = String::with_capacity(m.len());
+    let chars: Vec<char> = m.chars().collect();
+    for (i, c) in chars.iter().enumerate() {
+        let between_digits = *c == ','
+            && i > 0
+            && chars[i - 1].is_ascii_digit()
+            && chars.get(i + 1).is_some_and(|n| n.is_ascii_digit());
+        if !between_digits {
+            cleaned.push(*c);
+        }
+    }
+    let tokens: Vec<&str> = cleaned
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .collect();
+    const LIMIT_WORDS: &[&str] = &[
+        "max", "maximum", "limit", "limited", "exceed", "exceeds", "exceeded", "allowed", "up",
+        "large", "big", "wide",
+    ];
+    if !tokens.iter().any(|t| LIMIT_WORDS.contains(t)) {
+        return None;
+    }
+    let count = |t: &str| -> Option<u64> {
+        let (digits, mult) = match t.strip_suffix('k') {
+            Some(d) => (d, 1000),
+            None => (t, 1),
+        };
+        if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        digits
+            .parse::<u64>()
+            .ok()?
+            .checked_mul(mult)
+            .filter(|n| *n > 0)
+    };
+    for (i, t) in tokens.iter().enumerate() {
+        let Some(n) = count(t) else { continue };
+        let is = |j: usize, words: &[&str]| tokens.get(j).is_some_and(|w| words.contains(w));
+        let after_range = (i >= 1 && is(i - 1, &["range"]))
+            || (i >= 2 && is(i - 2, &["range"]) && is(i - 1, &["of", "is", "to", "at", "allowed"]));
+        let before_blocks = is(i + 1, &["block", "blocks"]);
+        if after_range || before_blocks {
+            return Some(n);
+        }
+    }
+    None
+}
+
+/// The window to scan next after a limit error, or `None` when the scan is
+/// already at the smallest window: the named limit when it is smaller than
+/// the window, otherwise half, never below `min_window`.
+pub fn next_window(window: u64, error: &LogError, min_window: u64) -> Option<u64> {
+    let LogError::RangeLimit { named } = error else {
+        return Some(window);
+    };
+    if window <= min_window {
+        return None;
+    }
+    let next = named
+        .filter(|n| *n < window)
+        .unwrap_or(window / 2)
+        .max(min_window);
+    Some(next)
+}
+
+/// Fetch every `NewItem` log of `list` in `[from, to]` from one RPC and
+/// check each path against its id, under the default window policy.
 pub async fn enumerate(
     source: &Source,
     list: Address,
@@ -357,13 +535,34 @@ pub async fn enumerate(
     to: u64,
     window: u64,
 ) -> Result<Enumeration> {
+    enumerate_with(source, list, from, to, &LogWindowPolicy::new(window)).await
+}
+
+/// `enumerate` under an explicit policy: a recognised range or result-size
+/// limit shrinks the window (to the named limit when there is one, otherwise
+/// by half, never below the minimum); a transient failure is retried at the
+/// same window with doubling backoff; a window that keeps timing out is
+/// treated as too large; and a shrunken window doubles again after
+/// sustained success, up to the configured window or the limit a source
+/// named.
+pub async fn enumerate_with(
+    source: &Source,
+    list: Address,
+    from: u64,
+    to: u64,
+    policy: &LogWindowPolicy,
+) -> Result<Enumeration> {
     if from > to {
         bail!("enumeration range is empty ({from} > {to})");
     }
     let rpc = source.rpc.as_str();
     let provider = source.provider();
     let mut out = Enumeration::default();
-    let mut window = window.max(1);
+    let mut ceiling = policy.window.max(1);
+    let min_window = policy.min_window.max(1).min(ceiling);
+    let mut window = ceiling;
+    let mut streak = 0u32;
+    let mut failures_here = 0u32;
     let mut start = from;
     while start <= to {
         let end = start.saturating_add(window - 1).min(to);
@@ -384,13 +583,47 @@ pub async fn enumerate(
         let logs = match attempt {
             Ok(logs) => logs,
             Err(e) => {
-                if window > 1000 {
-                    window = shrink_window(window, &format!("{e:#}"));
-                    continue;
+                let kind = classify_log_error(&format!("{e:#}"));
+                match kind {
+                    LogError::RangeLimit { named } => {
+                        let Some(next) = next_window(window, &kind, min_window) else {
+                            return Err(
+                                e.wrap_err("eth_getLogs failed even at the smallest window")
+                            );
+                        };
+                        if named.is_some_and(|n| n < window) {
+                            ceiling = ceiling.min(next);
+                        }
+                        window = next;
+                        streak = 0;
+                        failures_here = 0;
+                        out.shrinks += 1;
+                        continue;
+                    }
+                    LogError::Timeout | LogError::Transient => {
+                        failures_here += 1;
+                        if failures_here <= policy.transient_retries {
+                            out.retries += 1;
+                            tokio::time::sleep(policy.backoff * 2u32.pow(failures_here - 1)).await;
+                            continue;
+                        }
+                        if kind == LogError::Timeout && window > min_window {
+                            // Timing out every time at this size: too large for
+                            // this source; halve, and let success grow it back.
+                            window = (window / 2).max(min_window);
+                            streak = 0;
+                            failures_here = 0;
+                            out.shrinks += 1;
+                            continue;
+                        }
+                        return Err(e.wrap_err(format!(
+                            "eth_getLogs failed {failures_here} times at [{start}, {end}]"
+                        )));
+                    }
                 }
-                return Err(e.wrap_err("eth_getLogs failed even at the smallest window"));
             }
         };
+        failures_here = 0;
         for log in logs {
             let ev = log
                 .log_decode::<NewItem>()
@@ -404,27 +637,18 @@ pub async fn enumerate(
             }
             out.items.entry(id).or_insert(data);
         }
+        streak += 1;
+        if window < ceiling && streak >= policy.grow_after {
+            window = window.saturating_mul(2).min(ceiling);
+            streak = 0;
+            out.grows += 1;
+        }
         if end == to {
             break;
         }
         start = end + 1;
     }
     Ok(out)
-}
-
-/// The next log window after a failure: the limit the source names in its
-/// error when it names one (PublicNode: "exceed maximum block range: 50000"),
-/// otherwise half. The window only ever shrinks, and never below 1000.
-pub fn shrink_window(window: u64, error: &str) -> u64 {
-    let named = error
-        .split(|c: char| !c.is_ascii_digit())
-        .filter_map(|d| d.parse::<u64>().ok())
-        .filter(|n| *n >= 1000 && *n < window)
-        .max();
-    match named {
-        Some(n) if error.to_ascii_lowercase().contains("range") => n,
-        _ => (window / 2).max(1000),
-    }
 }
 
 /// Describe the difference between two candidate sets, or `None` when equal.
@@ -2584,21 +2808,368 @@ mod tests {
     }
 
     #[test]
-    fn log_window_shrinks_to_a_named_limit_or_halves() {
-        assert_eq!(shrink_window(1_000_000, "server returned an error response: error code -32701: exceed maximum block range: 50000"), 50_000);
+    fn log_errors_are_classified_by_recognised_formats_only() {
+        use LogError::*;
+        let named = |n| RangeLimit { named: Some(n) };
+        assert_eq!(classify_log_error("server returned an error response: error code -32701: exceed maximum block range: 50000"), named(50_000));
         assert_eq!(
-            shrink_window(1_000_000, "deadline of 30s exceeded"),
-            500_000
+            classify_log_error(
+                "eth_getLogs and eth_newFilter are limited to a 10,000 blocks range"
+            ),
+            named(10_000)
+        );
+        assert_eq!(classify_log_error("Log response size exceeded. You can make eth_getLogs requests with up to a 2K block range and no limit on the response size, or you can request any block range with a cap of 10K logs in the response. Based on your parameters and the response size limit, this block range should work: [0x2dc6c0, 0x2dc6c5]"), named(6));
+        assert_eq!(
+            classify_log_error(
+                "query returned more than 10000 results. Try with this block range [0x100, 0x1FF]."
+            ),
+            named(256)
         );
         assert_eq!(
-            shrink_window(1_000_000, "query returned more than 10000 results"),
-            500_000
+            classify_log_error("Block range is too large: max 1000 blocks"),
+            named(1000)
         );
         assert_eq!(
-            shrink_window(40_000, "exceed maximum block range: 50000"),
-            20_000
+            classify_log_error("block range of 5000 exceeded"),
+            named(5000)
         );
-        assert_eq!(shrink_window(1500, "anything"), 1000);
+        // A number that is not the limit is never taken for it.
+        assert_eq!(
+            classify_log_error("block range too large (request id 4200)"),
+            RangeLimit { named: None }
+        );
+        assert_eq!(
+            classify_log_error("request 48170840 failed: block range too large"),
+            RangeLimit { named: None }
+        );
+        assert_eq!(
+            classify_log_error("query returned more than 10000 results"),
+            RangeLimit { named: None }
+        );
+        assert_eq!(
+            classify_log_error("block range is too wide"),
+            RangeLimit { named: None }
+        );
+        // Not limits at all.
+        assert_eq!(
+            classify_log_error("https://rpc.example eth_getLogs [1, 2]: deadline of 30s exceeded"),
+            Timeout
+        );
+        assert_eq!(
+            classify_log_error("HTTP 504 Gateway Timeout from https://rpc.example"),
+            Timeout
+        );
+        assert_eq!(
+            classify_log_error("error code -32005: rate limit exceeded, retry in 4200 ms"),
+            Transient
+        );
+        assert_eq!(
+            classify_log_error("HTTP 503 Service Unavailable"),
+            Transient
+        );
+        assert_eq!(classify_log_error("connection reset by peer"), Transient);
+    }
+
+    #[test]
+    fn next_window_after_a_limit() {
+        let named = |n| LogError::RangeLimit { named: Some(n) };
+        let unnamed = LogError::RangeLimit { named: None };
+        assert_eq!(next_window(1_000_000, &named(50_000), 1000), Some(50_000));
+        assert_eq!(
+            next_window(40_000, &named(50_000), 1000),
+            Some(20_000),
+            "a limit above the window halves"
+        );
+        assert_eq!(next_window(1_000_000, &unnamed, 1000), Some(500_000));
+        assert_eq!(next_window(1500, &unnamed, 1000), Some(1000));
+        assert_eq!(
+            next_window(1000, &unnamed, 1000),
+            None,
+            "already at the smallest window"
+        );
+        assert_eq!(
+            next_window(1_000_000, &LogError::Transient, 1000),
+            Some(1_000_000),
+            "not a limit: same window"
+        );
+        assert_eq!(
+            next_window(1_000_000, &LogError::Timeout, 1000),
+            Some(1_000_000)
+        );
+    }
+
+    // ---------- enumeration: a JSON-RPC source on localhost ----------
+
+    const TEST_GENESIS: B256 =
+        b256!("4f1dd23188aab3a76b463e4af801b52b1248ef073c648cbdc4c9333d3da79756");
+
+    /// eth_getLogs behaviour: given the call index and the window, logs or a
+    /// JSON-RPC error (code, message).
+    type LogsScript =
+        dyn Fn(usize, u64, u64) -> Result<Vec<serde_json::Value>, (i64, String)> + Send + Sync;
+
+    fn hex_u64(v: &serde_json::Value) -> u64 {
+        u64::from_str_radix(v.as_str().unwrap().trim_start_matches("0x"), 16).unwrap()
+    }
+
+    /// The eth_getLogs windows a mock source was asked for, in order.
+    type Windows = Arc<std::sync::Mutex<Vec<(u64, u64)>>>;
+
+    /// A JSON-RPC server answering eth_chainId (100), the genesis hash,
+    /// eth_getCode (empty) and eth_getLogs per `script`, logging every
+    /// getLogs window in order.
+    fn mock_rpc(script: Arc<LogsScript>) -> (String, Windows) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let windows: Windows = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let windows2 = windows.clone();
+        std::thread::spawn(move || {
+            let calls = Arc::new(AtomicUsize::new(0));
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut raw = Vec::new();
+                let mut buf = [0u8; 8192];
+                let body_start;
+                loop {
+                    let n = stream.read(&mut buf).unwrap_or(0);
+                    if n == 0 {
+                        break;
+                    }
+                    raw.extend_from_slice(&buf[..n]);
+                    if let Some(p) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
+                        body_start = p + 4;
+                        let head = String::from_utf8_lossy(&raw[..p]).to_string();
+                        let len: usize = head
+                            .lines()
+                            .find_map(|l| {
+                                l.to_ascii_lowercase()
+                                    .strip_prefix("content-length:")
+                                    .map(|v| v.trim().parse().unwrap())
+                            })
+                            .unwrap_or(0);
+                        while raw.len() < body_start + len {
+                            let n = stream.read(&mut buf).unwrap_or(0);
+                            if n == 0 {
+                                break;
+                            }
+                            raw.extend_from_slice(&buf[..n]);
+                        }
+                        break;
+                    }
+                }
+                let Some(body_start) = raw.windows(4).position(|w| w == b"\r\n\r\n").map(|p| p + 4)
+                else {
+                    continue;
+                };
+                let req: serde_json::Value = serde_json::from_slice(&raw[body_start..]).unwrap();
+                let id = req["id"].clone();
+                let method = req["method"].as_str().unwrap_or_default();
+                let params = &req["params"];
+                let reply = match method {
+                    "eth_chainId" => Ok(serde_json::json!("0x64")),
+                    "eth_getBlockByNumber" => {
+                        Ok(serde_json::json!({"hash": TEST_GENESIS.to_string(), "number": "0x0"}))
+                    }
+                    "eth_getCode" => Ok(serde_json::json!("0x")),
+                    "eth_getLogs" => {
+                        let from = hex_u64(&params[0]["fromBlock"]);
+                        let to = hex_u64(&params[0]["toBlock"]);
+                        windows2.lock().unwrap().push((from, to));
+                        let i = calls.fetch_add(1, AtomicOrdering::SeqCst);
+                        script(i, from, to).map(serde_json::Value::Array)
+                    }
+                    other => Err((-32601, format!("unknown method {other}"))),
+                };
+                let body = match reply {
+                    Ok(result) => serde_json::json!({"jsonrpc": "2.0", "id": id, "result": result}),
+                    Err((code, message)) => serde_json::json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}}),
+                }
+                .to_string();
+                let _ = stream.write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                        body.len()
+                    )
+                    .as_bytes(),
+                );
+                let _ = stream.write_all(body.as_bytes());
+            }
+        });
+        (format!("http://{addr}/"), windows)
+    }
+
+    async fn test_source(url: &str) -> Source {
+        let pin = ChainPin {
+            chain_id: 100,
+            genesis_hash: TEST_GENESIS,
+        };
+        Source::authenticate(url, &pin, &Arc::default())
+            .await
+            .unwrap()
+    }
+
+    fn fast_policy(window: u64) -> LogWindowPolicy {
+        LogWindowPolicy {
+            backoff: Duration::from_millis(5),
+            ..LogWindowPolicy::new(window)
+        }
+    }
+
+    fn new_item_log(list: Address, id: B256, path: &str) -> serde_json::Value {
+        use alloy::sol_types::SolValue;
+        let data = (path.to_string(), false).abi_encode_params();
+        serde_json::json!({
+            "address": list.to_string(),
+            "topics": [NewItem::SIGNATURE_HASH.to_string(), id.to_string()],
+            "data": format!("0x{}", car::hex_lower(&data)),
+            "blockNumber": "0x10",
+            "transactionHash": B256::repeat_byte(0xab).to_string(),
+            "transactionIndex": "0x0",
+            "blockHash": B256::repeat_byte(0xcd).to_string(),
+            "logIndex": "0x0",
+            "removed": false,
+        })
+    }
+
+    #[tokio::test]
+    async fn log_scan_retries_a_transient_failure_at_the_same_window() {
+        let script: Arc<LogsScript> = Arc::new(|i, _from, _to| {
+            if i == 3 {
+                Err((-32603, "internal error: too many requests".to_string()))
+            } else {
+                Ok(Vec::new())
+            }
+        });
+        let (url, windows) = mock_rpc(script);
+        let source = test_source(&url).await;
+        let list = Address::repeat_byte(0x11);
+        let e = enumerate_with(&source, list, 0, 9_999, &fast_policy(1000))
+            .await
+            .unwrap();
+        let w = windows.lock().unwrap();
+        assert_eq!(w.len(), 11, "ten windows plus one retry: {w:?}");
+        assert!(
+            w.iter().all(|(f, t)| t - f + 1 == 1000),
+            "a transient failure never shrinks the window: {w:?}"
+        );
+        assert_eq!(w[3], w[4], "the failed window is retried as is");
+        assert_eq!((e.rpc_calls, e.retries, e.shrinks, e.grows), (11, 1, 0, 0));
+    }
+
+    #[tokio::test]
+    async fn log_scan_shrinks_to_a_named_limit_and_stays_there() {
+        let script: Arc<LogsScript> = Arc::new(|_i, from, to| {
+            if to - from + 1 > 2000 {
+                Err((-32701, "exceed maximum block range: 2000".to_string()))
+            } else {
+                Ok(Vec::new())
+            }
+        });
+        let (url, windows) = mock_rpc(script);
+        let source = test_source(&url).await;
+        let e = enumerate_with(
+            &source,
+            Address::repeat_byte(0x11),
+            0,
+            39_999,
+            &fast_policy(8000),
+        )
+        .await
+        .unwrap();
+        let w = windows.lock().unwrap();
+        assert_eq!(
+            w.len(),
+            21,
+            "one refused window, then twenty of 2000: {w:?}"
+        );
+        assert!(w[1..].iter().all(|(f, t)| t - f + 1 == 2000));
+        assert_eq!((e.rpc_calls, e.retries, e.shrinks, e.grows), (21, 0, 1, 0));
+    }
+
+    #[tokio::test]
+    async fn log_scan_halves_on_an_unnamed_limit_and_grows_back_after_success() {
+        // Windows over 2000 blocks are refused without naming the limit: the
+        // scan halves 8000 → 4000 → 2000, succeeds, and after eight windows
+        // tries 4000 again; that fails and it settles back, all bounded.
+        let script: Arc<LogsScript> = Arc::new(|_i, from, to| {
+            if to - from + 1 > 2000 {
+                Err((
+                    -32000,
+                    "block range too large (request id 4200)".to_string(),
+                ))
+            } else {
+                Ok(Vec::new())
+            }
+        });
+        let (url, windows) = mock_rpc(script);
+        let source = test_source(&url).await;
+        let e = enumerate_with(
+            &source,
+            Address::repeat_byte(0x11),
+            0,
+            39_999,
+            &fast_policy(8000),
+        )
+        .await
+        .unwrap();
+        let w = windows.lock().unwrap();
+        assert_eq!(
+            (w[0], w[1], w[2]),
+            ((0, 7999), (0, 3999), (0, 1999)),
+            "{w:?}"
+        );
+        assert!(e.grows >= 1, "sustained success grows the window: {e:?}");
+        assert!(e.shrinks >= 3);
+        assert!(
+            w.len() <= 26,
+            "growth attempts stay a small overhead: {} calls",
+            w.len()
+        );
+        assert_eq!(w.last().unwrap().1, 39_999);
+    }
+
+    #[tokio::test]
+    async fn log_scan_gives_up_after_bounded_retries_of_a_persistent_failure() {
+        let script: Arc<LogsScript> =
+            Arc::new(|_i, _f, _t| Err((-32005, "rate limit exceeded".to_string())));
+        let (url, windows) = mock_rpc(script);
+        let source = test_source(&url).await;
+        let err = enumerate_with(
+            &source,
+            Address::repeat_byte(0x11),
+            0,
+            999,
+            &fast_policy(1000),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            windows.lock().unwrap().len(),
+            4,
+            "one call and three retries"
+        );
+        assert!(format!("{err:#}").contains("failed 4 times"), "{err:#}");
+    }
+
+    #[tokio::test]
+    async fn log_scan_decodes_items_and_drops_path_id_mismatches() {
+        let list = Address::repeat_byte(0x11);
+        let good_path = "/ipfs/QmWtvA69pfnBbkJvLS3TAJuevnKdb35NbrvTDuARQszAAv/item.json";
+        let good_id = keccak256(good_path.as_bytes());
+        let bad_id = B256::repeat_byte(0x99);
+        let logs = vec![
+            new_item_log(list, good_id, good_path),
+            new_item_log(list, bad_id, good_path),
+        ];
+        let script: Arc<LogsScript> = Arc::new(move |_i, _f, _t| Ok(logs.clone()));
+        let (url, _) = mock_rpc(script);
+        let source = test_source(&url).await;
+        let e = enumerate_with(&source, list, 0, 999, &fast_policy(1000))
+            .await
+            .unwrap();
+        assert_eq!(e.logs, 2);
+        assert_eq!(e.items.get(&good_id).map(String::as_str), Some(good_path));
+        assert_eq!(e.mismatched, vec![(bad_id, good_path.to_string())]);
     }
 
     #[test]
