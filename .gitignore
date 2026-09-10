@@ -45,3 +45,6 @@ Thumbs.db
 
 # Rust build output (cli/, spikes/*): never tracked
 target/
+
+# The installer tests cache downloaded release assets here
+tools/skill-tests/.assets-*/
