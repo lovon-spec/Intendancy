@@ -50,10 +50,10 @@ Read the JSON line the command prints: `ok` must be `true`; `anchorMode` names t
 ## 4. The Tokens list as a token list
 
 ```sh
-"$CE" tokenlist --items tokens-items.json --compare https://t2crtokens.eth.limo/ --out tokens.json --diff-out diff.json
+"$CE" tokenlist --items tokens-items.json --compare https://t2crtokens.eth.limo/ --out tokens.json --diff-out diff.json --skipped-out skipped.json
 ```
 
-Renders a Tokens-list snapshot into the Uniswap token-lists schema (chain id and EIP-55 address from the rich address, validated decimals, `ipfs://` logos), deterministically. `--previous` applies token-lists versioning; `--compare` writes a diff: tokens only in ours, only in theirs, metadata differences. A token in ours and absent in theirs is one the other export dropped; the provenance proves ours was Registered at the anchor.
+Renders a Tokens-list snapshot into the Uniswap token-lists schema (chain id and EIP-55 address from the rich address, validated decimals, `ipfs://` logos), deterministically. `--previous` applies token-lists versioning; `--compare` writes a diff: tokens only in ours, only in theirs, metadata differences. A token in ours and absent in theirs is one the other export dropped; the provenance proves ours was Registered at the anchor. An item whose Address has no `eip155:` namespace (the list also holds Solana tokens) is skipped with a recorded reason (`--skipped-out` writes the list), the rule Kleros's own exporter applied; no chain is guessed for an address without one.
 
 ## 5. Publish
 

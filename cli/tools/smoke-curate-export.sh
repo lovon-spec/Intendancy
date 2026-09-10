@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Live smoke for `curate-export`: snapshot all four Kleros Scout registries on
 # Gnosis against public RPCs and gateways, render the Tokens list as a token
-# list with a diff against the discontinued t2crtokens.eth export, and run an
+# list with a diff against the t2crtokens.eth list (Kleros's archived exporter's
+# output, still regenerated), and run an
 # offline lookup on Address Tags. Prints wall-clock time and RPC calls per
 # registry, and checks determinism with a second Tokens export.
 #
@@ -34,15 +35,16 @@ PY
 done
 
 echo "== tokenlist (Tokens snapshot, compared with t2crtokens.eth) =="
-"$BIN" tokenlist --items "$WORK/tokens.json" --compare https://t2crtokens.eth.limo/ --out "$WORK/tokenlist.json" --diff-out "$WORK/diff.json" > "$WORK/tokenlist-summary.json"
+"$BIN" tokenlist --items "$WORK/tokens.json" --compare https://t2crtokens.eth.limo/ --out "$WORK/tokenlist.json" --diff-out "$WORK/diff.json" --skipped-out "$WORK/tokenlist-skipped.json" > "$WORK/tokenlist-summary.json"
 python3 - "$WORK" "$USDC" <<'PY'
 import json, sys
 work, usdc = sys.argv[1], sys.argv[2].lower()
 s = json.load(open(f"{work}/tokenlist-summary.json")); ours = json.load(open(f"{work}/tokenlist.json")); diff = json.load(open(f"{work}/diff.json"))
 mine = {(t["chainId"], t["address"].lower()) for t in ours["tokens"]}
 ours_only = {(t["chainId"], t["address"].lower()) for t in diff["oursOnly"]}
+theirs_only = {(t["chainId"], t["address"].lower()) for t in diff["theirsOnly"]}
 print(f"  tokens {s['tokens']} | skipped {s['skipped']} {s['skipReasons']} | version {s['version']} | sha256 {s['tokensSha256'][:16]}…")
-print(f"  USDC mainnet in ours: {(1, usdc) in mine} | in theirs: {(1, usdc) in mine and (1, usdc) not in ours_only}")
+print(f"  USDC mainnet in ours: {(1, usdc) in mine} | in theirs: {((1, usdc) in mine and (1, usdc) not in ours_only) or (1, usdc) in theirs_only}")
 print(f"  diff vs t2crtokens.eth ({s['compare']['referenceTokens']} tokens): ours-only {len(diff['oursOnly'])}, theirs-only {len(diff['theirsOnly'])}, metadata changes {len(diff['changed'])}")
 PY
 

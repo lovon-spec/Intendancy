@@ -833,6 +833,14 @@ pub struct Skipped {
     pub reason: String,
 }
 
+/// The skip reason for an Address value without the `eip155` namespace: the
+/// Tokens list also holds Solana tokens under `solana:`, and a plain address
+/// names no chain. No chain is guessed; Kleros's own exporter
+/// (kleros/t2cr-to-ipfs) applied the same rule, so a comparison with its list
+/// stays like-for-like.
+pub const NO_EIP155_NAMESPACE: &str =
+    "address has no eip155 namespace; skipped, as the discontinued Kleros export did";
+
 /// Parse a CAIP-10 style "eip155:<chainId>:<address>" value. The address is
 /// accepted in any case (list submitters do not always checksum) and
 /// re-emitted EIP-55 checksummed.
@@ -840,7 +848,7 @@ pub fn parse_rich_address(raw: &str) -> Result<(u64, Address)> {
     let mut parts = raw.trim().split(':');
     let ns = parts.next().unwrap_or_default();
     if ns != "eip155" {
-        bail!("address {raw:?}: namespace {ns:?} is not eip155");
+        bail!("{NO_EIP155_NAMESPACE}");
     }
     let chain: u64 = parts
         .next()
@@ -1567,7 +1575,19 @@ mod tests {
             addr2.to_checksum(None),
             "0xe91D153E0b41518A2Ce8Dd3D7944Fa863463a97d"
         );
-        assert!(parse_rich_address("cosmos:1:0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48").is_err());
+        assert_eq!(
+            parse_rich_address("cosmos:1:0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48")
+                .unwrap_err()
+                .to_string(),
+            NO_EIP155_NAMESPACE
+        );
+        assert_eq!(
+            parse_rich_address("0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48")
+                .unwrap_err()
+                .to_string(),
+            NO_EIP155_NAMESPACE,
+            "a plain address gets no guessed chain"
+        );
         assert!(parse_rich_address("eip155:x:0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48").is_err());
         assert!(parse_rich_address("eip155:1:0x1234").is_err());
         assert!(
@@ -2006,7 +2026,7 @@ mod tests {
             "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
         );
         assert_eq!(skipped.len(), 1);
-        assert!(skipped[0].reason.contains("eip155"));
+        assert_eq!(skipped[0].reason, NO_EIP155_NAMESPACE);
         let (tokens, _) = tokens_from_snapshot(&snap, true, "ipfs://").unwrap();
         assert_eq!(tokens.len(), 2);
     }

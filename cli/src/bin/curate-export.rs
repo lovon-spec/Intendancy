@@ -179,6 +179,9 @@ struct TokenlistArgs {
     /// Previous export, for token-lists version semantics.
     #[arg(long)]
     previous: Option<PathBuf>,
+    /// Also write the skipped items (item id and reason) as JSON.
+    #[arg(long)]
+    skipped_out: Option<PathBuf>,
     /// A reference list (URL or file) to diff against.
     #[arg(long)]
     compare: Option<String>,
@@ -357,6 +360,11 @@ async fn tokenlist(a: TokenlistArgs) -> Result<()> {
     };
     let bytes = lgtcr::serialize_list(&list_out)?;
     intend::store::atomic_write(&a.out, &bytes)?;
+    if let Some(path) = &a.skipped_out {
+        let mut skipped_bytes = serde_json::to_vec_pretty(&skipped)?;
+        skipped_bytes.push(b'\n');
+        intend::store::atomic_write(path, &skipped_bytes)?;
+    }
 
     let mut diff_summary = serde_json::Value::Null;
     if let Some(reference) = &a.compare {
@@ -398,6 +406,7 @@ async fn tokenlist(a: TokenlistArgs) -> Result<()> {
             "tokens": tokens.len(),
             "skipped": skipped.len(),
             "skipReasons": skip_reasons,
+            "skippedOut": a.skipped_out.as_ref().map(|p| p.display().to_string()),
             "version": list_out.version,
             "out": a.out.display().to_string(),
             "tokensSha256": lgtcr::sha256_hex(&bytes),
