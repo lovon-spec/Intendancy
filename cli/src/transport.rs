@@ -58,7 +58,11 @@ fn rpc_blocking(url: reqwest::Url, cap: u64, body: Vec<u8>) -> Result<Vec<u8>, T
 /// One attempt. The boolean says whether the failure is transient (worth a
 /// retry): a failed send or a transient status. Cap violations and non-transient
 /// statuses are final.
-fn rpc_blocking_once(url: &reqwest::Url, cap: u64, body: &[u8]) -> Result<Vec<u8>, (bool, TransportError)> {
+fn rpc_blocking_once(
+    url: &reqwest::Url,
+    cap: u64,
+    body: &[u8],
+) -> Result<Vec<u8>, (bool, TransportError)> {
     let client = crate::fetch::http_client()
         .map_err(|e| (false, TransportErrorKind::custom_str(&format!("{e:#}"))))?;
     let resp = client
@@ -92,7 +96,12 @@ fn rpc_blocking_once(url: &reqwest::Url, cap: u64, body: &[u8]) -> Result<Vec<u8
     let mut buf = Vec::new();
     resp.take(cap.saturating_add(1))
         .read_to_end(&mut buf)
-        .map_err(|e| (true, TransportErrorKind::custom_str(&format!("reading RPC response: {e}"))))?;
+        .map_err(|e| {
+            (
+                true,
+                TransportErrorKind::custom_str(&format!("reading RPC response: {e}")),
+            )
+        })?;
     if buf.len() as u64 > cap {
         return Err((
             false,
