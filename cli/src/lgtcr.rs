@@ -37,6 +37,7 @@ use tokio::task::JoinSet;
 
 use crate::anchor::{self, ChainPin, QuorumAnchor, Source};
 use crate::car::{self, Cid};
+use crate::profile::normalized_origin;
 use crate::snapshot::{verify_account, verify_slot, AccountFields, Limits};
 use crate::transport::{RpcCounts, RpcStats};
 
@@ -209,6 +210,9 @@ impl StatusFilter {
 /// CSV rendering: itemId, status, path, then one column per label in the
 /// order of the first item that carries columns (labels seen later are
 /// appended). Values are stringified; embedded quotes are doubled.
+/// A cell whose first character after leading whitespace or control
+/// characters is `=`, `+`, `-` or `@` gets a leading `'`, so a spreadsheet
+/// opens it as text rather than running a formula a list entry planted.
 pub fn snapshot_csv(snapshot: &ListSnapshot) -> String {
     let mut labels: Vec<String> = Vec::new();
     for it in &snapshot.items {
@@ -230,10 +234,18 @@ pub fn snapshot_csv(snapshot: &ListSnapshot) -> String {
         }
     }
     let esc = |s: &str| -> String {
+        let formula = s
+            .trim_start_matches(|c: char| c.is_whitespace() || c.is_control())
+            .starts_with(['=', '+', '-', '@']);
+        let s = if formula {
+            format!("'{s}")
+        } else {
+            s.to_string()
+        };
         if s.contains([',', '"', '\n', '\r']) {
             format!("\"{}\"", s.replace('"', "\"\""))
         } else {
-            s.to_string()
+            s
         }
     };
     let mut out = String::new();
@@ -735,6 +747,31 @@ pub async fn discover_start(
         }
         end = start - 1;
     }
+}
+
+/// The scan start when none is given: every log source discovers its own and
+/// the earliest wins; returns it and the source that reported it. Taken from
+/// one source, the start would let that source alone cut every scan short
+/// (an empty window, no code where there is code) while the truncated sets
+/// still agree. Completeness already rests on one honest log source, whose
+/// own discovery bounds the earliest start from below, so a lying source can
+/// only lengthen the scan. Requiring `--from-block` for every non-preset list
+/// would be sound too; this keeps discovery and asks no more trust than the
+/// log agreement already does.
+pub async fn discover_start_all(
+    sources: &[&Source],
+    list: Address,
+    anchor_block: u64,
+    window: u64,
+) -> Result<(u64, String)> {
+    let mut earliest: Option<(u64, String)> = None;
+    for source in sources {
+        let (start, _) = discover_start(source, list, anchor_block, window).await?;
+        if earliest.as_ref().is_none_or(|(e, _)| start < *e) {
+            earliest = Some((start, source.rpc.clone()));
+        }
+    }
+    earliest.ok_or_else(|| eyre!("no log source to discover the start from"))
 }
 
 // ---------- status proofs ----------
@@ -2118,18 +2155,34 @@ pub struct ExportOutcome {
     pub anchor_source: String,
 }
 
+/// A trust group (the header quorum, the log sources) needs at least two
+/// sources at pairwise-distinct normalized origins, the rule a profile's
+/// `anchor_rpcs` follow: one endpoint listed twice, or two URLs of one
+/// origin, is one source agreeing with itself.
+fn distinct_origins(group: &str, rpcs: &[String]) -> Result<()> {
+    if rpcs.len() < 2 {
+        bail!("at least two {group} RPC sources are required");
+    }
+    let mut seen: BTreeMap<String, &str> = BTreeMap::new();
+    for rpc in rpcs {
+        let origin = normalized_origin(rpc)?;
+        if let Some(first) = seen.insert(origin.clone(), rpc) {
+            bail!(
+                "{group} RPC sources {first} and {rpc} share the origin {origin}: a source listed twice agrees with itself; give independently operated ones"
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Every step of a verified Light-list export, fail-closed. `progress` gets
 /// one line per step for the terminal.
 pub async fn export_list(
     cfg: &ExportConfig,
     progress: &mut dyn FnMut(String),
 ) -> Result<ExportOutcome> {
-    if cfg.anchor_rpcs.len() < 2 {
-        bail!("at least two anchor RPC sources are required");
-    }
-    if cfg.log_rpcs.len() < 2 {
-        bail!("at least two log RPC sources are required");
-    }
+    distinct_origins("anchor", &cfg.anchor_rpcs)?;
+    distinct_origins("log", &cfg.log_rpcs)?;
     if cfg.gateways.is_empty() {
         bail!("at least one gateway is required");
     }
@@ -2192,18 +2245,14 @@ pub async fn export_list(
     let (from_block, from_source) = match cfg.from_block {
         Some(b) => (b, "flag or preset".to_string()),
         None => {
-            let (b, _) = discover_start(
-                log_sources[0],
-                cfg.list,
-                quorum.block_number,
-                cfg.log_window,
-            )
-            .await?;
+            let (b, rpc) =
+                discover_start_all(&log_sources, cfg.list, quorum.block_number, cfg.log_window)
+                    .await?;
             (
                 b,
                 format!(
-                    "discovered via {} (first window with no logs and no code)",
-                    log_sources[0].rpc
+                    "discovered via {rpc}, the earliest of the {} log sources' starts (first window with no logs and no code)",
+                    log_sources.len()
                 ),
             )
         }
@@ -3019,6 +3068,16 @@ mod tests {
                 .any(|l| l.contains("\"wxDAI \"\"wrapped\"\"\"")),
             "quotes are doubled: {csv}"
         );
+        // A planted formula opens as text, leading whitespace or not.
+        let mut snap = sample_snapshot();
+        snap.items[0].values["Name"] = serde_json::json!("\t=HYPERLINK(\"https://x.example\")");
+        snap.items[1].values["Name"] = serde_json::json!("@SUM(A1)");
+        let csv = snapshot_csv(&snap);
+        assert!(
+            csv.contains(",\"'\t=HYPERLINK(\"\"https://x.example\"\")\"\n")
+                && csv.contains(",'@SUM(A1)\n"),
+            "{csv}"
+        );
     }
 
     #[test]
@@ -3068,6 +3127,31 @@ mod tests {
             "0xeE1502e29795Ef6C2D60F8D7120596abE3baD990"
         );
         assert!(preset("nope").is_none());
+    }
+
+    #[test]
+    fn a_trust_group_needs_distinct_origins() {
+        let rpcs = |urls: [&str; 2]| urls.map(String::from).to_vec();
+        distinct_origins(
+            "log",
+            &rpcs([
+                "https://rpc.gnosischain.com",
+                "https://gnosis.gateway.tenderly.co",
+            ]),
+        )
+        .unwrap();
+        for repeated in [
+            ["https://rpc.example", "https://rpc.example"],
+            ["https://rpc.example/a", "https://RPC.example:443/b"],
+        ] {
+            let err = distinct_origins("anchor", &rpcs(repeated))
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.contains("share the origin https://rpc.example:443"),
+                "{err}"
+            );
+        }
     }
 
     #[test]
@@ -3455,6 +3539,33 @@ mod tests {
         assert_eq!(e.logs, 2);
         assert_eq!(e.items.get(&good_id).map(String::as_str), Some(good_path));
         assert_eq!(e.mismatched, vec![(bad_id, good_path.to_string())]);
+    }
+
+    #[tokio::test]
+    async fn the_scan_starts_at_the_earliest_start_any_log_source_discovers() {
+        // One source hides its logs and, like every mock, shows no code: on
+        // its word alone the scan would start in the anchor's window. The
+        // other serves logs down to block 5000, so its start is 4000, and
+        // that start wins whichever source comes first.
+        let list = Address::repeat_byte(0x11);
+        let path = "/ipfs/QmWtvA69pfnBbkJvLS3TAJuevnKdb35NbrvTDuARQszAAv/item.json";
+        let log = new_item_log(list, keccak256(path.as_bytes()), path);
+        let hiding: Arc<LogsScript> = Arc::new(|_i, _f, _t| Ok(Vec::new()));
+        let serving: Arc<LogsScript> = Arc::new(move |_i, _f, to| {
+            Ok(if to >= 5_000 {
+                vec![log.clone()]
+            } else {
+                Vec::new()
+            })
+        });
+        let hiding = test_source(&mock_rpc(hiding).0).await;
+        let serving = test_source(&mock_rpc(serving).0).await;
+        for sources in [[&hiding, &serving], [&serving, &hiding]] {
+            let found = discover_start_all(&sources, list, 9_999, 1000)
+                .await
+                .unwrap();
+            assert_eq!(found, (4_000, serving.rpc.clone()));
+        }
     }
 
     #[test]

@@ -35,7 +35,7 @@ CE="$HOME/.intend/bin/curate-export"
 
 Presets: `tokens`, `address-tags`, `atq`, `cdn`, each one deployment on Gnosis. Any other Light list needs `--list <address>` and `--items-slot`, plus `--chain-id` and `--genesis` off Gnosis; a preset name is not combined with another address or chain. `--anchor-block <n>` reruns at an earlier export's anchor and reproduces its `items.json` byte for byte. By default the snapshot holds Registered and ClearingRequested items; add `--include-pending` for the entries under review, which is what a challenger wants to inspect, or `--all` for everything.
 
-Read the JSON line the command prints: `ok` must be `true`; `anchorMode` names the anchor; `byStatus` is the proven status histogram; `fetchFailures` counts item files no gateway could serve. Report the anchor block and mode whenever you hand the snapshot to anyone; `rpc`, `ipfs` and `stageSeconds` say what the run measured. Each item in `items.json` carries its id, status, IPFS path, and the item file's `columns` and `values` verbatim; `items.csv` flattens the values by column label for spreadsheets.
+Read the JSON line the command prints: `ok` must be `true`; `anchorMode` names the anchor; `byStatus` is the proven status histogram; `fetchFailures` counts item files no gateway could serve. Report the anchor block and mode whenever you hand the snapshot to anyone; `rpc`, `ipfs` and `stageSeconds` say what the run measured. Each item in `items.json` carries its id, status, IPFS path, and the item file's `columns` and `values` verbatim; `items.csv` flattens the values by column label for spreadsheets; a cell that would start a formula (`=`, `+`, `-` or `@` after any leading whitespace) is prefixed with `'` so it opens as text.
 
 ## 3. Query offline
 
