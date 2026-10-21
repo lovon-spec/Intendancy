@@ -27,6 +27,7 @@ fn profile_a() -> Profile {
             .parse()
             .unwrap(),
         arbitrator_extra_data: Bytes::from(vec![0u8; 64]),
+        arbitrator_wrapper: None,
         governor: Address::repeat_byte(0x04),
         policy_updates: Vec::new(),
         anchor_rpcs: vec!["http://127.0.0.1:1".into(), "http://127.0.0.1:2".into()],

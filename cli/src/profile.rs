@@ -7,7 +7,7 @@ use eyre::{bail, Context, Result};
 use serde::Deserialize;
 
 use crate::anchor::QuorumAnchor;
-use crate::snapshot::{VerifierProfile, SNAPSHOT_VERSION};
+use crate::snapshot::{wrapper_envelope, VerifierProfile, WrapperPin, SNAPSHOT_VERSION};
 
 /// A policy version the profile author ACCEPTS beyond the deployment one
 /// (spec §3 `policyVersions`; owner decision 2026-09-06). `updates` is the
@@ -19,6 +19,27 @@ pub struct PolicyUpdate {
     pub updates: u64,
     pub registration_meta_evidence: String,
     pub clearing_meta_evidence: String,
+}
+
+/// An Intendment wrapper the profile author ACCEPTS as the registry's
+/// arbitrator besides `arbitrator` (spec §3 `arbitratorWrapper`): the
+/// `IntendmentArbitrator` instance a governor `changeArbitrator(wrapper,
+/// envelope)` installs. It holds a challenge for a concession window and
+/// otherwise escalates to `arbitrator` with `arbitrator_extra_data`, so the
+/// court stays the pinned one. The author pins the instance from its
+/// deployment after checking `HOST()` is the registry, `K()` is
+/// `arbitrator` and `GOVERNOR()` is `governor` (`cli/tools/pin-wrapper.sh`);
+/// every verification then proves the instance's code hash, which fixes
+/// those immutables.
+#[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ArbitratorWrapper {
+    pub address: Address,
+    /// keccak256 of the instance's runtime code, immutables included.
+    pub code_hash: B256,
+    /// The wrapper epoch the registry's envelope names; the registry must
+    /// hold `abi.encode(uint8(1), uint32(epoch), arbitrator_extra_data)`.
+    pub epoch: u32,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -43,6 +64,11 @@ pub struct Profile {
     /// MANDATORY pin of the arbitrator's extra data (slot 1; for Kleros the
     /// court id and juror count), proven and compared byte for byte.
     pub arbitrator_extra_data: Bytes,
+    /// OPTIONAL wrapper accepted in front of `arbitrator` (see
+    /// `ArbitratorWrapper`): while the registry names it, its envelope is
+    /// proven in slot 1 and its code hash against the same anchor.
+    #[serde(default)]
+    pub arbitrator_wrapper: Option<ArbitratorWrapper>,
     /// MANDATORY pin of the registry's governor (storage slot 3): the timelock
     /// in front of the Safe (RFC 0001 §9), i.e. who may queue every other
     /// change. Proven at every anchor; a changed governor fails closed until a
@@ -130,6 +156,23 @@ impl Profile {
         if self.arbitrator == Address::ZERO {
             bail!("arbitrator must be pinned (a registry has exactly one arbitrator)");
         }
+        if let Some(w) = &self.arbitrator_wrapper {
+            if w.address == Address::ZERO
+                || w.address == self.arbitrator
+                || w.address == self.registry
+            {
+                bail!(
+                    "arbitrator_wrapper.address must be the deployed wrapper instance, distinct \
+                     from the arbitrator it escalates to and from the registry"
+                );
+            }
+            if w.code_hash == B256::ZERO || w.code_hash == alloy::primitives::KECCAK256_EMPTY {
+                bail!("arbitrator_wrapper.code_hash must be the instance's runtime code hash");
+            }
+            if w.epoch == 0 {
+                bail!("arbitrator_wrapper.epoch must be at least 1 (a wrapper numbers its epochs from 1)");
+            }
+        }
         if self.governor == Address::ZERO {
             bail!("governor must be pinned (the timelock in front of the Safe; spec §3)");
         }
@@ -155,9 +198,13 @@ impl Profile {
                 bail!("policy_updates[{i}]: the two MetaEvidence references must differ");
             }
         }
-        if self.arbitrator_extra_data.len() > crate::snapshot::MAX_ARBITRATOR_EXTRA_DATA_BYTES {
+        let longest_extra_data = self
+            .wrapper_pin()
+            .map_or(0, |w| w.extra_data.len())
+            .max(self.arbitrator_extra_data.len());
+        if longest_extra_data > crate::snapshot::MAX_ARBITRATOR_EXTRA_DATA_BYTES {
             bail!(
-                "arbitrator_extra_data exceeds {} bytes",
+                "arbitrator_extra_data (or the wrapper envelope around it) exceeds {} bytes",
                 crate::snapshot::MAX_ARBITRATOR_EXTRA_DATA_BYTES
             );
         }
@@ -192,7 +239,8 @@ impl Profile {
     /// context — local state was verified under: chain_id, genesis_hash,
     /// registry, registry_code_hash, the arbitrator and its extra data, both
     /// deployment MetaEvidence pins, the governor, every accepted policy
-    /// version, and the test-workaround flag. Two profiles differing in ANY of these (a
+    /// version, the test-workaround flag, and the accepted arbitrator
+    /// wrapper if any. Two profiles differing in ANY of these (a
     /// same-chain-id fork with another genesis, the same address under other
     /// bytecode, edited policy pins, test mode) produce different ids, so
     /// catalogs, lockfile entries, and enable proofs made under one context
@@ -230,20 +278,31 @@ impl Profile {
             }
         }
         buf.push(self.test_headerless_state_root as u8);
+        // 2026-10: an accepted arbitrator wrapper is part of the context, as a
+        // tagged fixed-length tail. A profile without one keeps its v3 id, so
+        // state verified under it stays bound until the profile names one.
+        if let Some(w) = &self.arbitrator_wrapper {
+            buf.extend_from_slice(b"arbitrator-wrapper-v1");
+            buf.extend_from_slice(w.address.as_slice());
+            buf.extend_from_slice(w.code_hash.as_slice());
+            buf.extend_from_slice(&w.epoch.to_be_bytes());
+        }
         keccak256(&buf)
     }
 
-    /// Successor relation for policy-version transitions (`intend migrate`):
-    /// `self` is a successor of `old` when every trust field that defines
-    /// WHICH deployment and trust context is identical — chain, genesis,
-    /// registry, code hash, the arbitrator and its extra data, the governor,
-    /// the two deployment MetaEvidence pins, the test-mode flag — and
-    /// `old.policy_updates` is a STRICT prefix of `self.policy_updates`: the
-    /// same accepted versions in the same order, then at least one more.
+    /// Successor relation for policy-version and arbitrator-wrapper
+    /// transitions (`intend migrate`): `self` is a successor of `old` when
+    /// every trust field that defines WHICH deployment and trust context is
+    /// identical — chain, genesis, registry, code hash, the arbitrator and its
+    /// extra data, the governor, the two deployment MetaEvidence pins, the
+    /// test-mode flag — `old.policy_updates` is a prefix of
+    /// `self.policy_updates`, and something was ADDED: at least one more
+    /// accepted version, or an arbitrator wrapper where `old` had none.
     /// Nothing else qualifies: an identical profile has nothing to migrate,
-    /// a shorter or changed accepted set is a different trust decision, and
-    /// any other difference is a different deployment — never a continuation
-    /// of this one. The `Err` names the first field that disqualifies.
+    /// a shorter or changed accepted set or a changed or dropped wrapper is a
+    /// different trust decision, and any other difference is a different
+    /// deployment — never a continuation of this one. The `Err` names the
+    /// first field that disqualifies.
     pub fn is_successor_of(&self, old: &Profile) -> std::result::Result<(), String> {
         macro_rules! same {
             ($field:ident, $label:expr) => {
@@ -265,13 +324,18 @@ impl Profile {
         same!(registration_meta_evidence, "registration_meta_evidence");
         same!(clearing_meta_evidence, "clearing_meta_evidence");
         same!(test_headerless_state_root, "test_headerless_state_root");
-        let (old_n, new_n) = (old.policy_updates.len(), self.policy_updates.len());
-        if new_n <= old_n {
-            if self.policy_updates == old.policy_updates {
-                return Err(
-                    "the accepted policy versions are identical — nothing to migrate".into(),
-                );
+        let wrapper_added = match (&old.arbitrator_wrapper, &self.arbitrator_wrapper) {
+            (None, Some(_)) => true,
+            (o, n) if o == n => false,
+            (o, n) => {
+                return Err(format!(
+                    "arbitrator_wrapper differs (old {o:?}, new {n:?}) — a successor only ADDS \
+                     a wrapper, never changes or drops one"
+                ))
             }
+        };
+        let (old_n, new_n) = (old.policy_updates.len(), self.policy_updates.len());
+        if new_n < old_n || (new_n == old_n && self.policy_updates != old.policy_updates) {
             return Err(format!(
                 "the new profile accepts {new_n} policy version(s) beyond the deployment one, \
                  the old one {old_n} — a successor only ADDS accepted versions"
@@ -284,7 +348,23 @@ impl Profile {
                     .into(),
             );
         }
+        if new_n == old_n && !wrapper_added {
+            return Err(
+                "the accepted policy versions and arbitrators are identical — nothing to migrate"
+                    .into(),
+            );
+        }
         Ok(())
+    }
+
+    /// The accepted arbitrator wrapper with the envelope the registry must
+    /// hold while it is the arbitrator.
+    pub fn wrapper_pin(&self) -> Option<WrapperPin> {
+        self.arbitrator_wrapper.as_ref().map(|w| WrapperPin {
+            address: w.address,
+            code_hash: w.code_hash,
+            extra_data: wrapper_envelope(w.epoch, &self.arbitrator_extra_data),
+        })
     }
 
     /// The full proof context handed to state transitions (`enable_transition`).
@@ -313,6 +393,7 @@ impl Profile {
             registry_code_hash: self.registry_code_hash,
             arbitrator: self.arbitrator,
             arbitrator_extra_data: self.arbitrator_extra_data.clone(),
+            arbitrator_wrapper: self.wrapper_pin(),
             governor: self.governor,
             accepted_policy_updates: self.policy_updates.iter().map(|u| u.updates).collect(),
             anchor_block: anchor.block_number,
@@ -408,7 +489,9 @@ pub fn normalized_origin(raw: &str) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalized_origin, validate_meta_evidence_ref, PolicyUpdate, Profile};
+    use super::{
+        normalized_origin, validate_meta_evidence_ref, ArbitratorWrapper, PolicyUpdate, Profile,
+    };
 
     fn base_profile() -> Profile {
         let cid = "bafybeidgtfsc2ro3pfmyggmbz4ea7xg7g4gpehqur7klaadtreyjz6s3fu";
@@ -421,6 +504,7 @@ mod tests {
                 .parse()
                 .unwrap(),
             arbitrator_extra_data: alloy::primitives::Bytes::from(vec![0u8; 64]),
+            arbitrator_wrapper: None,
             governor: alloy::primitives::Address::repeat_byte(0x04),
             policy_updates: Vec::new(),
             anchor_rpcs: vec!["http://127.0.0.1:1".into(), "http://127.0.0.1:2".into()],
@@ -431,6 +515,14 @@ mod tests {
             provider_rpc: None,
             gateways: Vec::new(),
             test_headerless_state_root: false,
+        }
+    }
+
+    fn wrapper() -> ArbitratorWrapper {
+        ArbitratorWrapper {
+            address: alloy::primitives::Address::repeat_byte(0x05),
+            code_hash: alloy::primitives::B256::repeat_byte(0x06),
+            epoch: 1,
         }
     }
 
@@ -485,6 +577,39 @@ mod tests {
         let mut p = base_profile();
         p.registry = alloy::primitives::Address::repeat_byte(0x99);
         assert_ne!(p.deployment_context_id(), base_id, "registry");
+        // An accepted arbitrator wrapper, and each of its pins.
+        let with = |w: ArbitratorWrapper| {
+            let mut p = base_profile();
+            p.arbitrator_wrapper = Some(w);
+            p.deployment_context_id()
+        };
+        let wrapper_id = with(wrapper());
+        assert_ne!(wrapper_id, base_id, "wrapper");
+        for (changed, label) in [
+            (
+                ArbitratorWrapper {
+                    address: alloy::primitives::Address::repeat_byte(0x99),
+                    ..wrapper()
+                },
+                "wrapper address",
+            ),
+            (
+                ArbitratorWrapper {
+                    code_hash: alloy::primitives::B256::repeat_byte(0x99),
+                    ..wrapper()
+                },
+                "wrapper code hash",
+            ),
+            (
+                ArbitratorWrapper {
+                    epoch: 2,
+                    ..wrapper()
+                },
+                "wrapper epoch",
+            ),
+        ] {
+            assert_ne!(with(changed), wrapper_id, "{label}");
+        }
         // Irrelevant to WHICH deployment: transport endpoints.
         let mut p = base_profile();
         p.anchor_rpcs.push("http://127.0.0.1:3".into());
@@ -504,6 +629,17 @@ mod tests {
         assert_eq!(
             base_profile().deployment_context_id(),
             "0xa3dc4dea4df4b2b7ce1dfb5f5005d116a8697fe4e912ff8f9f28596b3dc5c1ca"
+                .parse::<alloy::primitives::B256>()
+                .unwrap()
+        );
+        // The same profile accepting wrapper(): the v3 preimage plus the tail
+        // "arbitrator-wrapper-v1" ‖ address ‖ code hash ‖ epoch (u32 BE),
+        // computed the same independent way.
+        let mut p = base_profile();
+        p.arbitrator_wrapper = Some(wrapper());
+        assert_eq!(
+            p.deployment_context_id(),
+            "0xf8d674a4728f9908f9428e81c08b86065f69cc00396e895c9a247cd3bfe80014"
                 .parse::<alloy::primitives::B256>()
                 .unwrap()
         );
@@ -543,6 +679,98 @@ mod tests {
         b3.gateways.push("http://gw".into());
         b3.provider_rpc = Some("http://127.0.0.1:9".into());
         b3.is_successor_of(&a).unwrap();
+        // Adding the arbitrator wrapper is a successor step on its own or with
+        // a new version; changing or dropping it never is.
+        let mut bw = b.clone();
+        bw.arbitrator_wrapper = Some(wrapper());
+        bw.is_successor_of(&b).unwrap();
+        bw.is_successor_of(&a).unwrap();
+        assert!(bw.is_successor_of(&bw).unwrap_err().contains("identical"));
+        assert!(b
+            .is_successor_of(&bw)
+            .unwrap_err()
+            .contains("arbitrator_wrapper"));
+        let mut bw2 = bw.clone();
+        bw2.arbitrator_wrapper = Some(ArbitratorWrapper {
+            epoch: 2,
+            ..wrapper()
+        });
+        assert!(bw2
+            .is_successor_of(&bw)
+            .unwrap_err()
+            .contains("arbitrator_wrapper"));
+        let mut dw = d.clone();
+        dw.arbitrator_wrapper = Some(wrapper());
+        dw.is_successor_of(&bw).unwrap();
+    }
+
+    #[test]
+    fn arbitrator_wrapper_takes_the_court_data_in_an_envelope() {
+        // abi.encode(uint8(1), uint32(1), courtExtraData) for court 19 and
+        // three jurors, as `cast abi-encode "f(uint8,uint32,bytes)"` gives it:
+        // what IntendmentArbitrator accepts and the registry holds after the
+        // switch.
+        let mut p = base_profile();
+        p.arbitrator_extra_data = alloy::primitives::hex::decode(
+            "0000000000000000000000000000000000000000000000000000000000000013\
+             0000000000000000000000000000000000000000000000000000000000000003",
+        )
+        .unwrap()
+        .into();
+        p.arbitrator_wrapper = Some(wrapper());
+        p.validate().unwrap();
+        let envelope = alloy::primitives::hex::decode(
+            "0000000000000000000000000000000000000000000000000000000000000001\
+             0000000000000000000000000000000000000000000000000000000000000001\
+             0000000000000000000000000000000000000000000000000000000000000060\
+             0000000000000000000000000000000000000000000000000000000000000040\
+             0000000000000000000000000000000000000000000000000000000000000013\
+             0000000000000000000000000000000000000000000000000000000000000003",
+        )
+        .unwrap();
+        assert_eq!(
+            p.wrapper_pin().unwrap().extra_data.as_ref(),
+            envelope.as_slice()
+        );
+        // Short court data pads to a word, as the ABI does.
+        assert_eq!(
+            crate::snapshot::wrapper_envelope(7, &[0xaa, 0xbb, 0xcc]).as_ref(),
+            alloy::primitives::hex::decode(
+                "0000000000000000000000000000000000000000000000000000000000000001\
+                 0000000000000000000000000000000000000000000000000000000000000007\
+                 0000000000000000000000000000000000000000000000000000000000000060\
+                 0000000000000000000000000000000000000000000000000000000000000003\
+                 aabbcc0000000000000000000000000000000000000000000000000000000000",
+            )
+            .unwrap()
+            .as_slice()
+        );
+        // A wrapper pin must name a deployed instance of its own.
+        let reject = |w: ArbitratorWrapper| {
+            let mut q = p.clone();
+            q.arbitrator_wrapper = Some(w);
+            q.validate().unwrap_err().to_string()
+        };
+        assert!(reject(ArbitratorWrapper {
+            address: p.arbitrator,
+            ..wrapper()
+        })
+        .contains("arbitrator_wrapper.address"));
+        assert!(reject(ArbitratorWrapper {
+            address: p.registry,
+            ..wrapper()
+        })
+        .contains("arbitrator_wrapper.address"));
+        assert!(reject(ArbitratorWrapper {
+            code_hash: alloy::primitives::KECCAK256_EMPTY,
+            ..wrapper()
+        })
+        .contains("code_hash"));
+        assert!(reject(ArbitratorWrapper {
+            epoch: 0,
+            ..wrapper()
+        })
+        .contains("epoch"));
     }
 
     #[test]

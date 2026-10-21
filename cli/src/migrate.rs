@@ -1,5 +1,6 @@
 //! Policy-version migration of a lockfile (`intend migrate`; spec §3
 //! `policyVersions`). A profile that accepts a newly announced policy version
+//! (or, the same way, an arbitrator wrapper, spec §3 `arbitratorWrapper`)
 //! has a different deployment context id, so every entry installed under the
 //! previous profile is refused by `audit` and `enable` until it is carried
 //! across explicitly: the new profile must be a strict SUCCESSOR of the old
@@ -116,8 +117,8 @@ pub fn prepare(new: &Profile, old: &Profile, lock: &Lockfile) -> Result<Migratio
     if let Err(reason) = new.is_successor_of(old) {
         bail!(
             "the active profile is not a successor of the --from profile: {reason}. A \
-             migration carries entries across a policy-version transition only; anything \
-             else is a different deployment or trust configuration"
+             migration carries entries across an added policy version or arbitrator \
+             wrapper only; anything else is a different deployment or trust configuration"
         );
     }
     let from = old.proof_context();

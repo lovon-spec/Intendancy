@@ -758,6 +758,7 @@ async fn verify_and_persist(
                 "clearingRequested": status_counts[3],
             },
             "slotProofsChecked": stats.slot_proofs_checked,
+            "arbitrator": stats.arbitrator,
         })
     );
     Ok(())

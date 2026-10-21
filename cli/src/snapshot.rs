@@ -94,6 +94,37 @@ impl Default for Limits {
     }
 }
 
+/// The arbitrator wrapper a profile accepts in front of the pinned court
+/// (spec §3 `arbitratorWrapper`): an Intendment `IntendmentArbitrator`
+/// instance, which holds challenges for a concession window and escalates
+/// to the court with the court's own extra data. The code hash binds its
+/// runtime code and with it its immutables (the registry as `HOST`, the
+/// court as `K`, the governor); `extra_data` is what the registry must hold
+/// while the wrapper is its arbitrator, the envelope
+/// `abi.encode(uint8(1), uint32(epoch), courtExtraData)`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WrapperPin {
+    pub address: Address,
+    pub code_hash: B256,
+    pub extra_data: Bytes,
+}
+
+/// `abi.encode(uint8(1), uint32(epoch), real)`: the extra data an Intendment
+/// wrapper takes, naming one of its epochs and the court extra data it
+/// forwards (the wrapper rejects any other version or a non-canonical
+/// encoding).
+pub fn wrapper_envelope(epoch: u32, real: &[u8]) -> Bytes {
+    let word = |v: U256| B256::from(v).0;
+    let mut out = Vec::with_capacity(128 + real.len().div_ceil(32) * 32);
+    out.extend_from_slice(&word(U256::from(1u64)));
+    out.extend_from_slice(&word(U256::from(epoch)));
+    out.extend_from_slice(&word(U256::from(0x60u64)));
+    out.extend_from_slice(&word(U256::from(real.len() as u64)));
+    out.extend_from_slice(real);
+    out.resize(128 + real.len().div_ceil(32) * 32, 0);
+    out.into()
+}
+
 /// What the VERIFIER pins out of band — never taken from the snapshot itself
 /// (spec §3 + §6 step 0). The anchor triple comes from an authenticated header
 /// (spec §7); registry identity and codehash come from the local profile.
@@ -106,6 +137,8 @@ pub struct VerifierProfile {
     /// The pinned arbitrator and its extra data (spec §3; slots 0 and 1).
     pub arbitrator: Address,
     pub arbitrator_extra_data: Bytes,
+    /// The arbitrator wrapper accepted in its place, if the profile pins one.
+    pub arbitrator_wrapper: Option<WrapperPin>,
     /// The pinned governor (spec §3; slot 3).
     pub governor: Address,
     /// Accepted `metaEvidenceUpdates` values beyond 0 (spec §3 `policyVersions`).
@@ -126,6 +159,76 @@ pub fn accepted_versions_label(accepted: &[u64]) -> String {
     let mut v: Vec<String> = vec!["0".into()];
     v.extend(accepted.iter().map(|u| u.to_string()));
     v.join(", ")
+}
+
+/// The arbitrator-identity slots a generator or a fresh point check requests:
+/// slot 0 plus the extra-data words of the LONGEST accepted pin, so one
+/// request covers whichever accepted arbitrator the registry holds (the
+/// court's data words are a prefix of the wrapper envelope's).
+pub fn arbitrator_slots(extra_data: &Bytes, wrapper: Option<&WrapperPin>) -> Vec<B256> {
+    let len = wrapper.map_or(0, |w| w.extra_data.len());
+    let mut slots = vec![B256::from(U256::from(ARBITRATOR_SLOT))];
+    slots.extend(extra_data_slots_for_len(len.max(extra_data.len())));
+    slots
+}
+
+/// Step 3c's identity rule (spec §6): the proven slot-0 word must name the
+/// pinned arbitrator, or the pinned wrapper when the profile has one. Returns
+/// the arbitrator, the extra data it must carry, and the wrapper pin when it
+/// is the wrapper, whose own account the caller must then prove.
+pub fn accepted_arbitrator<'a>(
+    word: B256,
+    arbitrator: Address,
+    extra_data: &'a Bytes,
+    wrapper: Option<&'a WrapperPin>,
+) -> Result<(Address, &'a Bytes, Option<&'a WrapperPin>)> {
+    if word[..12].iter().any(|b| *b != 0) {
+        bail!("arbitrator slot holds a non-address word {word} (fail closed)");
+    }
+    let observed = Address::from_word(word);
+    if observed == arbitrator {
+        return Ok((observed, extra_data, None));
+    }
+    if let Some(w) = wrapper.filter(|w| w.address == observed) {
+        return Ok((observed, &w.extra_data, Some(w)));
+    }
+    let pinned = match wrapper {
+        Some(w) => format!("{arbitrator} or the arbitrator wrapper {}", w.address),
+        None => arbitrator.to_string(),
+    };
+    bail!(
+        "arbitrator pin violated: the registry's arbitrator is {observed}, the profile pins \
+         {pinned} — a changed arbitrator needs a new signed profile release (fail closed)"
+    )
+}
+
+/// The wrapper arm of step 3c: the wrapper's account, proven against the same
+/// state root under its pinned address, must carry the pinned runtime code
+/// hash. That hash fixes its code and its immutables: the registry it serves,
+/// the court it escalates to, its governor.
+pub fn verify_wrapper_account(
+    state_root: B256,
+    pin: &WrapperPin,
+    proof: Option<&AccountProof>,
+    limits: &Limits,
+) -> Result<()> {
+    let proof = proof.ok_or_else(|| {
+        eyre::eyre!(
+            "the registry's arbitrator is the arbitrator wrapper {} and no account proof \
+             for it was supplied (fail closed)",
+            pin.address
+        )
+    })?;
+    verify_account(
+        state_root,
+        pin.address,
+        &proof.account_fields,
+        &proof.account,
+        pin.code_hash,
+        limits,
+    )
+    .map_err(|e| eyre::eyre!("arbitrator wrapper {}: {e:#}", pin.address))?;
+    Ok(())
 }
 
 /// Storage slots a Solidity `bytes` of `len` bytes at `ARBITRATOR_EXTRA_DATA_SLOT`
@@ -313,6 +416,21 @@ pub struct Proofs {
     /// Deduplicated Merkle-Patricia nodes keyed by keccak256(node).
     pub nodes: BTreeMap<B256, Bytes>,
     pub slots: Vec<SlotProof>,
+    /// The arbitrator wrapper's account proof (spec §4, §6 step 3c), present
+    /// when the registry's arbitrator is the profile's pinned wrapper.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arbitrator_account: Option<AccountProof>,
+}
+
+/// An EIP-1186 proof of an account other than the registry: the claimed
+/// fields and the root-to-leaf node list, bounded at the wire like the
+/// registry's own.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountProof {
+    pub account_fields: AccountFields,
+    #[serde(deserialize_with = "bounded_account_proof")]
+    pub account: Vec<Bytes>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -334,6 +452,8 @@ pub struct VerifyStats {
     pub slot_proofs_checked: u64,
     pub unique_nodes: u64,
     pub storage_root: B256,
+    /// The proven arbitrator: the pinned court or the pinned wrapper.
+    pub arbitrator: Address,
 }
 
 fn verify_mpt<K: AsRef<[u8]>, V: rlp::Encodable>(
@@ -392,7 +512,7 @@ pub fn verify_account(
     // different contract proves its own codehash — neither matches the pin.
     if fields.code_hash != pinned_code_hash {
         bail!(
-            "proven codeHash {} != pinned registry codeHash {}",
+            "proven codeHash {} != pinned codeHash {}",
             fields.code_hash,
             pinned_code_hash
         );
@@ -501,16 +621,19 @@ pub fn verify(
         );
     }
     // Length slot + policy-counter slot + per-item (list + status) slots.
-    // 2N + 2 (length, policy counter) + the arbitrator slot + the extra-data
-    // words the PINNED length occupies (spec §6 step 3c) + the governor slot
+    // 2N + 2 (length, policy counter) + the arbitrator slot and the extra-data
+    // words of the longest accepted pin (spec §6 step 3c) + the governor slot
     // (step 3d).
-    let arbitrator_slots =
-        1 + extra_data_slots_for_len(profile.arbitrator_extra_data.len()).len() as u64;
+    let arbitrator_slot_count = arbitrator_slots(
+        &profile.arbitrator_extra_data,
+        profile.arbitrator_wrapper.as_ref(),
+    )
+    .len() as u64;
     let max_slots = limits
         .max_items
         .saturating_mul(2)
         .saturating_add(2)
-        .saturating_add(arbitrator_slots)
+        .saturating_add(arbitrator_slot_count)
         .saturating_add(1);
     if snapshot.proofs.slots.len() as u64 > max_slots {
         bail!(
@@ -632,26 +755,30 @@ pub fn verify(
     // court a verdict came from, and its parameters, are consumer-visible
     // policy: a governor may switch them, and a switch is accepted only through
     // a new signed profile, never silently. Both are proven at every anchor.
+    // A profile may also pin an arbitrator wrapper that escalates to the same
+    // court; its runtime code hash is then proven against the same root.
     let arb_word = check_slot(B256::from(U256::from(ARBITRATOR_SLOT)), None)?;
-    let arb_bytes = B256::from(arb_word);
-    if arb_bytes[..12].iter().any(|b| *b != 0) {
-        bail!("arbitrator slot holds a non-address word {arb_word} (fail closed)");
-    }
-    let arbitrator = Address::from_word(arb_bytes);
-    if arbitrator != profile.arbitrator {
-        bail!(
-            "arbitrator pin violated: the registry's arbitrator is {arbitrator}, the profile pins {} — \
-             a changed arbitrator needs a new signed profile release (fail closed)",
-            profile.arbitrator
-        );
+    let (arbitrator, expected_extra, wrapper) = accepted_arbitrator(
+        B256::from(arb_word),
+        profile.arbitrator,
+        &profile.arbitrator_extra_data,
+        profile.arbitrator_wrapper.as_ref(),
+    )?;
+    if let Some(pin) = wrapper {
+        verify_wrapper_account(
+            trusted_state_root,
+            pin,
+            snapshot.proofs.arbitrator_account.as_ref(),
+            limits,
+        )?;
     }
     let main = check_slot(B256::from(U256::from(ARBITRATOR_EXTRA_DATA_SLOT)), None)?;
     let (proven_len, long) = bytes_storage_len(main)?;
-    if proven_len != profile.arbitrator_extra_data.len() {
+    if proven_len != expected_extra.len() {
         bail!(
-            "arbitrator extra data pin violated: the registry's extra data is {proven_len} bytes, the profile pins {} bytes — \
+            "arbitrator extra data pin violated: the registry's extra data is {proven_len} bytes, the profile pins {} bytes for {arbitrator} — \
              a changed court or juror count needs a new signed profile release (fail closed)",
-            profile.arbitrator_extra_data.len()
+            expected_extra.len()
         );
     }
     let mut data_words = Vec::new();
@@ -661,12 +788,12 @@ pub fn verify(
         }
     }
     let observed = decode_bytes_storage(main, &data_words)?;
-    if observed.as_slice() != profile.arbitrator_extra_data.as_ref() {
+    if observed.as_slice() != expected_extra.as_ref() {
         bail!(
-            "arbitrator extra data pin violated: the registry's extra data is 0x{} , the profile pins 0x{} — \
+            "arbitrator extra data pin violated: the registry's extra data is 0x{} , the profile pins 0x{} for {arbitrator} — \
              a changed court or juror count needs a new signed profile release (fail closed)",
             alloy::primitives::hex::encode(&observed),
-            alloy::primitives::hex::encode(&profile.arbitrator_extra_data)
+            alloy::primitives::hex::encode(expected_extra)
         );
     }
 
@@ -702,6 +829,7 @@ pub fn verify(
         slot_proofs_checked: checked,
         unique_nodes: snapshot.proofs.nodes.len() as u64,
         storage_root,
+        arbitrator,
     })
 }
 

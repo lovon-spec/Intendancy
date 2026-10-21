@@ -20,9 +20,10 @@ use eyre::{bail, eyre, Result};
 use crate::anchor::QuorumAnchor;
 use crate::profile::Profile;
 use crate::snapshot::{
-    bytes_storage_len, decode_bytes_storage, extra_data_slots_for_len, item_list_slot,
-    item_status_slot, verify_account, verify_slot, AccountFields, Anchor, Binding, Limits, Proofs,
-    Row, SlotProof, Snapshot, ARBITRATOR_SLOT, GOVERNOR_SLOT, ITEM_LIST_SLOT,
+    accepted_arbitrator, arbitrator_slots, bytes_storage_len, decode_bytes_storage,
+    extra_data_slots_for_len, item_list_slot, item_status_slot, verify_account, verify_slot,
+    verify_wrapper_account, AccountFields, AccountProof, Anchor, Binding, Limits, Proofs, Row,
+    SlotProof, Snapshot, ARBITRATOR_SLOT, GOVERNOR_SLOT, ITEM_LIST_SLOT,
     META_EVIDENCE_UPDATES_SLOT, SNAPSHOT_VERSION,
 };
 
@@ -205,16 +206,17 @@ pub async fn generate_snapshot(
 
     // Slot set: length + policy-version counter + governor + every itemList[i] +
     // every status slot.
-    let mut slots: Vec<B256> = Vec::with_capacity(7 + 2 * rows.len());
+    let mut slots: Vec<B256> = Vec::with_capacity(11 + 2 * rows.len());
     slots.push(B256::from(U256::from(ITEM_LIST_SLOT)));
     slots.push(B256::from(U256::from(META_EVIDENCE_UPDATES_SLOT)));
     slots.push(B256::from(U256::from(GOVERNOR_SLOT)));
-    // Arbitrator identity (spec §6 step 3c): slot 0 and the extra-data words the
-    // PINNED length occupies; a longer on-chain value fails the verifier's
+    // Arbitrator identity (spec §6 step 3c): slot 0 and the extra-data words of
+    // the longest accepted pin; a longer on-chain value fails the verifier's
     // length check before any data word is needed.
-    slots.push(B256::from(U256::from(ARBITRATOR_SLOT)));
-    slots.extend(extra_data_slots_for_len(
-        profile.arbitrator_extra_data.len(),
+    let wrapper = profile.wrapper_pin();
+    slots.extend(arbitrator_slots(
+        &profile.arbitrator_extra_data,
+        wrapper.as_ref(),
     ));
     for row in &rows {
         slots.push(item_list_slot(row.index));
@@ -263,6 +265,20 @@ pub async fn generate_snapshot(
     let (account_fields, account_proof) =
         account.ok_or_else(|| eyre!("no proof responses from {rpc_url}"))?;
 
+    // The wrapper's own account when the registry names it. The reported
+    // slot-0 value only decides what to fetch; `verify` proves all of it.
+    let arb_slot = B256::from(U256::from(ARBITRATOR_SLOT));
+    let mut arbitrator_account = None;
+    if let Some(pin) = &wrapper {
+        let names_wrapper = slot_proofs.iter().any(|sp| {
+            sp.slot == arb_slot && sp.value == U256::from_be_bytes(pin.address.into_word().0)
+        });
+        if names_wrapper {
+            arbitrator_account =
+                Some(account_proof_at(&provider, rpc_url, pin.address, anchor.block_number).await?);
+        }
+    }
+
     Ok(Snapshot {
         version: SNAPSHOT_VERSION.into(),
         binding: Binding {
@@ -281,7 +297,35 @@ pub async fn generate_snapshot(
             account: account_proof,
             nodes,
             slots: slot_proofs,
+            arbitrator_account,
         },
+    })
+}
+
+/// An account proof with no storage keys at `block`, as the untrusted
+/// provider serves it (the caller verifies it against the anchor).
+async fn account_proof_at(
+    provider: &(impl Provider + Clone),
+    rpc_url: &str,
+    address: Address,
+    block: u64,
+) -> Result<AccountProof> {
+    let resp = crate::anchor::with_deadline(&format!("{rpc_url} eth_getProof {address}"), async {
+        provider
+            .get_proof(address, Vec::new())
+            .block_id(BlockId::from(block))
+            .await
+            .map_err(|e| eyre!("{e}"))
+    })
+    .await?;
+    Ok(AccountProof {
+        account_fields: AccountFields {
+            nonce: resp.nonce,
+            balance: resp.balance,
+            storage_root: resp.storage_hash,
+            code_hash: resp.code_hash,
+        },
+        account: resp.account_proof,
     })
 }
 
@@ -322,11 +366,11 @@ pub async fn point_check(
     let provider = checked_provider(rpc_url, profile).await?;
     let slot = item_status_slot(item_id);
     let meta_slot = B256::from(U256::from(META_EVIDENCE_UPDATES_SLOT));
-    let arb_slot = B256::from(U256::from(ARBITRATOR_SLOT));
     let gov_slot = B256::from(U256::from(GOVERNOR_SLOT));
-    let extra_slots = extra_data_slots_for_len(profile.arbitrator_extra_data.len());
-    let mut wanted = vec![slot, meta_slot, arb_slot, gov_slot];
-    wanted.extend(extra_slots.iter().copied());
+    let wrapper = profile.wrapper_pin();
+    let arb_slots = arbitrator_slots(&profile.arbitrator_extra_data, wrapper.as_ref());
+    let mut wanted = vec![slot, meta_slot, gov_slot];
+    wanted.extend(arb_slots.iter().copied());
     let resp = crate::anchor::with_deadline(&format!("{rpc_url} eth_getProof"), async {
         provider
             .get_proof(profile.registry, wanted.clone())
@@ -377,34 +421,36 @@ pub async fn point_check(
         verify_slot(storage_root, want, p.value, &p.proof, &limits)?;
         Ok(p.value)
     };
-    let arb_word = B256::from(proven(arb_slot)?);
-    if arb_word[..12].iter().any(|b| *b != 0) || Address::from_word(arb_word) != profile.arbitrator
-    {
-        bail!(
-            "arbitrator pin violated at block {}: the registry's arbitrator is {}, the profile pins {} (fail closed; a changed arbitrator needs a new signed profile)",
-            anchor.block_number,
-            Address::from_word(arb_word),
-            profile.arbitrator
-        );
+    let at_block = |e: eyre::Report| eyre!("at block {}: {e:#}", anchor.block_number);
+    let (arbitrator, expected_extra, wrapper_named) = accepted_arbitrator(
+        B256::from(proven(arb_slots[0])?),
+        profile.arbitrator,
+        &profile.arbitrator_extra_data,
+        wrapper.as_ref(),
+    )
+    .map_err(at_block)?;
+    if let Some(pin) = wrapper_named {
+        let proof = account_proof_at(&provider, rpc_url, pin.address, anchor.block_number).await?;
+        verify_wrapper_account(anchor.state_root, pin, Some(&proof), &limits).map_err(at_block)?;
     }
-    let main = proven(extra_slots[0])?;
+    let main = proven(arb_slots[1])?;
     let (len, long) = bytes_storage_len(main)?;
-    if len != profile.arbitrator_extra_data.len() {
+    if len != expected_extra.len() {
         bail!(
-            "arbitrator extra data pin violated at block {}: {len} bytes on chain, {} pinned (fail closed)",
+            "arbitrator extra data pin violated at block {}: {len} bytes on chain, {} pinned for {arbitrator} (fail closed)",
             anchor.block_number,
-            profile.arbitrator_extra_data.len()
+            expected_extra.len()
         );
     }
     let mut words = Vec::new();
     if long {
-        for s in extra_slots.iter().skip(1) {
-            words.push(proven(*s)?);
+        for s in extra_data_slots_for_len(len).into_iter().skip(1) {
+            words.push(proven(s)?);
         }
     }
-    if decode_bytes_storage(main, &words)?.as_slice() != profile.arbitrator_extra_data.as_ref() {
+    if decode_bytes_storage(main, &words)?.as_slice() != expected_extra.as_ref() {
         bail!(
-            "arbitrator extra data pin violated at block {}: the court or juror count changed (fail closed; a changed court needs a new signed profile)",
+            "arbitrator extra data pin violated at block {}: the court, juror count or wrapper epoch changed (fail closed; a changed court needs a new signed profile)",
             anchor.block_number
         );
     }
