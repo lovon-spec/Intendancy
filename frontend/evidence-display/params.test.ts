@@ -22,6 +22,27 @@ describe("display parameters", () => {
     expect(params.arbitrableChainID).toBe(100);
     expect(params.arbitrableContractAddress).toBe(REGISTRY);
   });
+  it("reads the court's query-string form, which MetaEvidence _v 1.0.0 selects", () => {
+    // Built the way kleros/court case-details-card.jsx builds it when `_v` is not "0".
+    const injected = {
+      disputeID: "1840",
+      chainID: "100",
+      arbitratorContractAddress: ARBITRATOR,
+      arbitratorJsonRpcUrl: "https://rpc.example/gnosis",
+      arbitratorChainID: "100",
+      arbitrableContractAddress: REGISTRY,
+      arbitrableChainID: "100",
+      arbitrableJsonRpcUrl: "https://rpc.example/gnosis",
+    };
+    expect(readParams(`?${new URLSearchParams(injected).toString()}`)).toEqual({
+      disputeID: "1840",
+      arbitrableContractAddress: REGISTRY,
+      arbitratorContractAddress: ARBITRATOR,
+      arbitrableChainID: 100,
+      arbitrableJsonRpcUrl: "https://rpc.example/gnosis",
+      itemID: undefined,
+    });
+  });
   it("reads the plain form and drops malformed values", () => {
     const item = `0x${"ab".repeat(32)}`;
     expect(readParams(`?registry=${REGISTRY}&item=${item}&chain=31337`)).toEqual({
