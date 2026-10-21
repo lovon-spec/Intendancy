@@ -26,11 +26,11 @@ pub struct PolicyUpdate {
 /// `IntendmentArbitrator` instance a governor `changeArbitrator(wrapper,
 /// envelope)` installs. It holds a challenge for a concession window and
 /// otherwise escalates to `arbitrator` with `arbitrator_extra_data`, so the
-/// court stays the pinned one. The author pins the instance from its
-/// deployment after checking `HOST()` is the registry, `K()` is
-/// `arbitrator` and `GOVERNOR()` is `governor` (`cli/tools/pin-wrapper.sh`);
-/// every verification then proves the instance's code hash, which fixes
-/// those immutables.
+/// court stays the pinned one. The author pins the instance only after
+/// authenticating it (`cli/tools/pin-wrapper.sh`): the factory runs the
+/// reviewed build and the instance is that factory's CREATE2 deployment for
+/// this registry, its governor and `arbitrator`; every verification then
+/// proves the instance's code hash, which fixes those immutables.
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ArbitratorWrapper {

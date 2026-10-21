@@ -2,23 +2,27 @@
 # Rehearse the Agent Skills Registry's switch to an Intendment wrapper on an anvil fork of Gnosis
 # and run the intend CLI across it: the real registry, the real timelock (impersonated) deploying
 # a wrapper through IntendmentFactory, registering its epoch and calling
-# changeArbitrator(wrapper, envelope), as the governance batch will.
+# changeArbitrator(wrapper, envelope), as the governance batch will. The factory and wrapper are
+# built from the commit pinned in tools/wrapper-provenance.env, with its config.
 #
 # Fork mode proves only state anvil holds locally (a forked account's remote slots read as absent
 # in eth_getProof), so the script first copies the registry slots the CLI proves into local
 # storage, with the values the fork reads for them.
 #
-# What it shows: before the switch the shipped profile and a profile that also pins the wrapper
-# both verify through the court; after it the shipped profile fails closed and the wrapper profile
-# verifies (envelope proven in slot 1, the wrapper's code hash proven at the same anchor), carries
-# an install across with `migrate --from`, and audits it current; a submission paying the deposit
-# computed from the registry's live arbitrator and extra data is accepted, executes, and verifies;
-# a second wrapper instance fails closed. What it does not show: quorum independence (one anvil
-# node under two origins) or header-authenticated state roots (fork headers carry none, so the
-# profiles set the labelled test workaround).
+# What it shows: pin-wrapper.sh authenticates the wrapper deployed through the factory, and refuses
+# a lookalike (the same creation code and arguments deployed directly, which answers every getter
+# and quotes the epoch) and a factory with other code. Before the switch the shipped profile and a
+# profile that also pins the wrapper both verify through the court. After it the shipped profile
+# fails closed and the wrapper profile verifies (envelope proven in slot 1, the wrapper's code hash
+# proven at the same anchor), carries an install across with `migrate --from` and audits it
+# current; a submission paying the deposit computed from the registry's live arbitrator and extra
+# data is accepted, executes and verifies; a second wrapper instance fails closed. What it does not
+# show: quorum independence (one anvil node under two origins) or header-authenticated state roots
+# (fork headers carry none, so the profiles set the labelled test workaround).
 #
-# Requirements: anvil, cast, forge, python3, a built intend (`cargo build`), and the intendment
-# repository at $INTENDMENT, built into the work dir (the repository itself is not written).
+# Requirements: anvil, cast, forge, python3, a built intend (`cargo build`), and a clean intendment
+# checkout at the pinned commit in $INTENDMENT (built from that commit into the work dir; the
+# checkout itself is not written).
 set -eu
 here="$(cd "$(dirname "$0")/.." && pwd)"
 INTENDMENT=${INTENDMENT:?set INTENDMENT to the intendment repository}
@@ -39,6 +43,8 @@ pid=
 cleanup() { [ -n "$pid" ] && kill "$pid" 2>/dev/null || true; }
 trap cleanup EXIT
 fail() { echo "FATAL: $*"; exit 1; }
+pin_wrapper() { INTENDMENT="$INTENDMENT" PIN_WORK="$work" "$here/tools/pin-wrapper.sh" "$@"; }
+CONFIG=$(sed -n 's/^CONFIG=\([^ #]*\).*/\1/p' "$here/tools/wrapper-provenance.env")
 num() { echo "${1%% *}"; }
 settle() { cast rpc anvil_mine 0x2 --rpc-url $A > /dev/null; } # past the fork's finality margin
 send() { cast send "$@" --private-key $KEY --rpc-url $A --json > /dev/null; }
@@ -47,9 +53,9 @@ P_OLD=(--profile "$work/old.toml" --state-dir "$work/state-old")
 P_NEW=(--profile "$work/new.toml" --state-dir "$work/state-new")
 lower() { echo "$1" | tr 'A-F' 'a-f'; }
 json_field() { python3 -I -c 'import json,sys; print(json.loads(open(sys.argv[1]).read().strip().splitlines()[-1])[sys.argv[2]])' "$@"; }
-expect_fail() { # <log> <needle> <intend args...>: must exit nonzero naming <needle>
+expect_fail() { # <log> <needle> <command...>: must exit nonzero naming <needle>
   local log=$1 needle=$2; shift 2
-  set +e; "$INTEND" "$@" > "$log" 2>&1; local rc=$?; set -e
+  set +e; "$@" > "$log" 2>&1; local rc=$?; set -e
   [ $rc -ne 0 ] || fail "expected failure, got success: $*"
   grep -q "$needle" "$log" || { cat "$log"; fail "expected \"$needle\""; }
 }
@@ -100,25 +106,33 @@ register() { # <descriptor>: request, wait out the (shortened) challenge period,
   send $REG "executeRequest(bytes32)" "$(cast keccak "$1")"
   settle
 }
-deploy_wrapper() { # the timelock asks the factory for an instance bound to the registry and court
-  as_timelock $FACTORY "deploy(address,address,uint8,(uint256,uint256,uint256,uint256,uint256))" \
-    $REG $COURT 1 "(172800,86400,86400,604800,86400)" \
+deploy_wrapper() { # <factory>: the timelock asks it for an instance bound to the registry and court
+  as_timelock $1 "deploy(address,address,uint8,(uint256,uint256,uint256,uint256,uint256))" \
+    $REG $COURT 1 "($CONFIG)" \
     | python3 -I -c 'import json,sys; t=sys.argv[1]; r=json.load(sys.stdin); print("0x" + [l for l in r["logs"] if l["topics"][0] == t][0]["topics"][2][-40:])' \
       "$(cast keccak "WrapperDeployed(address,address,address)")"
-  # (window 2 d, funding 1 d, resolver grace 1 d, reserve timelock 7 d, retirement margin 1 d)
+}
+register_epoch() { # <wrapper>: epoch 1 on the registry's court data, no margin or premium, maxCost 1.5x
+  as_timelock $1 "registerEpoch(bytes,uint256,uint256,uint256,string,string)" $EXTRA 0 0 \
+    "$(python3 -I -c 'import sys; print((int(sys.argv[1]) * 3 + 1) // 2)' $Q)" \
+    "ipfs://fork-registration" "ipfs://fork-removal" > /dev/null
 }
 
-echo "== build the wrapper contracts =="
-forge build --root "$INTENDMENT" --out "$work/intendment-out" --cache-path "$work/intendment-cache" \
-  > "$work/forge-build.log" 2>&1 || { cat "$work/forge-build.log"; fail "forge build"; }
-FACTORY_CODE=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["bytecode"]["object"])' \
-  "$work/intendment-out/IntendmentFactory.sol/IntendmentFactory.json")
+echo "== build the wrapper contracts from the pinned commit =="
+OUT=$(pin_wrapper --build)
+code_of() { python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))[sys.argv[2]]["object"])' \
+  "$OUT/$1.sol/$1.json" ${2:-bytecode}; }
+FACTORY_CODE=$(code_of IntendmentFactory)
 
 echo "== anvil fork of Gnosis @ $FORK_BLOCK on $A =="
+cast chain-id --rpc-url $A > /dev/null 2>&1 && fail "something already serves $A; stop it first"
 anvil --fork-url "$UPSTREAM" --fork-block-number $FORK_BLOCK --port 8547 --slots-in-an-epoch 1 \
       --retries 10 --fork-retry-backoff 2000 --compute-units-per-second 50 > "$work/anvil.log" 2>&1 &
 pid=$!
 for i in {1..60}; do cast chain-id --rpc-url $A > /dev/null 2>&1 && break; sleep 0.5; done
+# Everything else runs in a subshell: zsh skips the EXIT trap when errexit fires inside a
+# function, and a failure must still stop anvil.
+(
 now=$(date +%s)
 ts=$(cast block latest --rpc-url $A --json | python3 -I -c "import json,sys; print(int(json.load(sys.stdin)['timestamp'],16))")
 cast rpc evm_increaseTime $((now - ts)) --rpc-url $A > /dev/null
@@ -154,21 +168,45 @@ register "$SKILL"
     --car "$here/fixtures/kubo/tree.car" --lockfile ./lock.json )
 ( cd "$work" && "$INTEND" "${P_OLD[@]}" audit --lockfile ./lock.json )
 
-echo "== deploy the wrapper the way the governance batch will =="
+echo "== deploy the factory, then the wrapper the way the governance batch will =="
 FACTORY=$(cast send --private-key $KEY --rpc-url $A --create "$FACTORY_CODE" --json \
   | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["contractAddress"])')
-W=$(deploy_wrapper)
 Q=$(num "$(cast call $COURT "arbitrationCost(bytes)(uint256)" $EXTRA --rpc-url $A)")
-as_timelock $W "registerEpoch(bytes,uint256,uint256,uint256,string,string)" $EXTRA 0 0 $Q \
-  "ipfs://fork-registration" "ipfs://fork-removal" > /dev/null
+W=$(deploy_wrapper $FACTORY)
+register_epoch $W
 as_timelock $W "fundReserve()" --value $Q > /dev/null
 ENVELOPE=$(cast abi-encode "f(uint8,uint32,bytes)" 1 1 $EXTRA)
 settle
 echo "wrapper $W (factory $FACTORY), epoch 1 quotes $Q wei"
 
-echo "== pin it: a profile that accepts the court or this wrapper =="
-"$here/tools/pin-wrapper.sh" $A $W 1 "$work/old.toml" > "$work/wrapper.toml"
+echo "== pin it: provenance first, then a profile that accepts the court or this wrapper =="
+pin_wrapper $A $FACTORY $W "$work/old.toml" > "$work/wrapper.toml"
 cat "$work/wrapper.toml"
+# A lookalike: the same creation code and constructor arguments deployed directly, with its epoch
+# registered. Every getter and the quote match; only its provenance gives it away.
+ARGS=$(cast abi-encode "f(address,address,address,uint8,(uint256,uint256,uint256,uint256,uint256))" \
+  $REG $COURT $TIMELOCK 1 "($CONFIG)")
+L=$(cast send --private-key $KEY --rpc-url $A --create "$(code_of IntendmentArbitrator)${ARGS#0x}" --json \
+  | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["contractAddress"])')
+register_epoch $L
+for g in HOST K GOVERNOR; do
+  [ "$(lower "$(cast call $L "$g()(address)" --rpc-url $A)")" = "$(lower "$(cast call $W "$g()(address)" --rpc-url $A)")" ] \
+    || fail "the lookalike's $g() differs"
+done
+[ "$(cast call $L "arbitrationCost(bytes)(uint256)" $ENVELOPE --rpc-url $A)" = \
+  "$(cast call $W "arbitrationCost(bytes)(uint256)" $ENVELOPE --rpc-url $A)" ] || fail "the lookalike quotes differently"
+expect_fail "$work/pin-lookalike.log" "is not $FACTORY's CREATE2 deployment" pin_wrapper $A $FACTORY $L "$work/old.toml"
+echo "lookalike $L, same getters and quote, refused: ok"
+# A factory with other code: the build's runtime with one metadata byte changed, still working, and
+# a wrapper the timelock deploys through it.
+F2=0x00000000000000000000000000000000000f2f2f
+cast rpc anvil_setCode $F2 "$(code_of IntendmentFactory deployedBytecode | python3 -I -c \
+  'import sys; h=bytearray.fromhex(sys.stdin.read().strip()[2:]); h[-20] ^= 1; print("0x" + h.hex())')" \
+  --rpc-url $A > /dev/null
+W_F2=$(deploy_wrapper $F2)
+register_epoch $W_F2
+expect_fail "$work/pin-factory.log" "not intendment" pin_wrapper $A $F2 $W_F2 "$work/old.toml"
+echo "factory $F2 with other code, and its wrapper $W_F2, refused: ok"
 { cat "$work/old.toml"; echo; cat "$work/wrapper.toml"; } > "$work/new.toml"
 "$INTEND" "${P_NEW[@]}" update > "$work/update-new-before.log"; cat "$work/update-new-before.log"
 [ "$(json_field "$work/update-new-before.log" arbitrator)" = "$(lower $COURT)" ] || fail "expected the court arm"
@@ -176,7 +214,7 @@ cat "$work/wrapper.toml"
 echo "== the switch: changeArbitrator(wrapper, envelope) through the timelock =="
 as_timelock $REG "changeArbitrator(address,bytes)" $W $ENVELOPE > /dev/null
 settle
-expect_fail "$work/update-old-after.log" "arbitrator pin violated" "${P_OLD[@]}" update
+expect_fail "$work/update-old-after.log" "arbitrator pin violated" "$INTEND" "${P_OLD[@]}" update
 echo "shipped profile fails closed on the wrapper: ok"
 "$INTEND" "${P_NEW[@]}" update > "$work/update-new-after.log"; cat "$work/update-new-after.log"
 [ "$(json_field "$work/update-new-after.log" arbitrator)" = "$(lower $W)" ] || fail "expected the wrapper arm"
@@ -206,12 +244,12 @@ register "$(descriptor wrapper-era-skill "Submitted after the switch." "$CID")"
 [ "$(json_field "$work/update-new-submitted.log" items)" = $((ITEMS + 1)) ] || fail "the new item is not in the catalog"
 
 echo "== any other arbitrator still fails closed: a second wrapper instance =="
-W2=$(deploy_wrapper)
-as_timelock $W2 "registerEpoch(bytes,uint256,uint256,uint256,string,string)" $EXTRA 0 0 $Q \
-  "ipfs://fork-registration" "ipfs://fork-removal" > /dev/null
+W2=$(deploy_wrapper $FACTORY)
+register_epoch $W2
 as_timelock $REG "changeArbitrator(address,bytes)" $W2 $ENVELOPE > /dev/null
 settle
-expect_fail "$work/update-w2.log" "arbitrator pin violated" "${P_NEW[@]}" update
-( cd "$work" && expect_fail audit-w2.log "arbitrator pin violated" "${P_NEW[@]}" audit --lockfile ./lock.json )
+expect_fail "$work/update-w2.log" "arbitrator pin violated" "$INTEND" "${P_NEW[@]}" update
+( cd "$work" && expect_fail audit-w2.log "arbitrator pin violated" "$INTEND" "${P_NEW[@]}" audit --lockfile ./lock.json )
 echo "second instance $W2 fails closed: ok"
+)
 echo "WRAPPER FORK OK (work dir: $work)"

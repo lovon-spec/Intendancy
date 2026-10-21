@@ -44,8 +44,10 @@ clearing_meta_evidence = "/ipfs/bafybeifgs26pc2yuvt34bs6gjavtg7ke563fov22aoyojs6
 # arbitrator_extra_data) and its runtime code hash proven at every anchor; the hash fixes its
 # immutables (HOST the registry, K xKlerosLiquid, GOVERNOR the timelock). Anything else fails
 # closed. FILL IN BEFORE RELEASE: the wrapper is not deployed yet; cli/tools/pin-wrapper.sh
-# checks the deployed instance and prints this table. Adding it changes the deployment context:
-# installs made under the previous profile are carried over with `intend migrate --from`.
+# authenticates the deployed instance (the factory runs the build of the commit pinned in
+# cli/tools/wrapper-provenance.env and the wrapper is its CREATE2 deployment for this registry)
+# and prints this table. Adding it changes the deployment context: installs made under the
+# previous profile are carried over with `intend migrate --from`.
 # [arbitrator_wrapper]
 # address = "0x…"
 # code_hash = "0x…"
