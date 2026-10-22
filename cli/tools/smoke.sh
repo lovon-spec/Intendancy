@@ -89,10 +89,16 @@ print('0x'+out.hex())
 EOF
 )
 ID=$(cast keccak "$RLP")
-EXTRA=0x00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000003
-COST=$(cast call 0x9C1dA9A04925bDfDedf0f6421bC7EEa8305F9002 "arbitrationCost(bytes)(uint256)" $EXTRA --rpc-url $A)
-COST=${COST%% *}
-cast send $REG "addItem(bytes)" "$RLP" --value $COST --private-key $KEY --rpc-url $A --json > /dev/null
+# What a request pays: its base deposit plus the quote of the registry's LIVE arbitrator for its
+# LIVE extra data, never a pinned court (after a switch the arbitrator is a wrapper).
+deposit() {
+  local arb=$(cast call $REG "arbitrator()(address)" --rpc-url $A)
+  local extra=$(cast call $REG "arbitratorExtraData()(bytes)" --rpc-url $A)
+  local base=$(cast call $REG "$1()(uint256)" --rpc-url $A)
+  local cost=$(cast call $arb "arbitrationCost(bytes)(uint256)" $extra --rpc-url $A)
+  python3 -c "print(${base%% *} + ${cost%% *})"
+}
+cast send $REG "addItem(bytes)" "$RLP" --value $(deposit submissionBaseDeposit) --private-key $KEY --rpc-url $A --json > /dev/null
 cast rpc evm_increaseTime 10 --rpc-url $A > /dev/null && cast rpc evm_mine --rpc-url $A > /dev/null
 cast send $REG "executeRequest(bytes32)" "$ID" --private-key $KEY --rpc-url $A --json > /dev/null
 settle
@@ -126,7 +132,7 @@ echo "== audit (expect current, exit 0) =="
 ( cd "$work" && "$INTEND" "${P[@]}" audit )
 
 echo "== remove on-chain, audit (expect revoked, exit 1) =="
-cast send $REG "removeItem(bytes32,string)" "$ID" "" --value $COST --private-key $KEY --rpc-url $A --json > /dev/null
+cast send $REG "removeItem(bytes32,string)" "$ID" "" --value $(deposit removalBaseDeposit) --private-key $KEY --rpc-url $A --json > /dev/null
 cast rpc evm_increaseTime 10 --rpc-url $A > /dev/null && cast rpc evm_mine --rpc-url $A > /dev/null
 cast send $REG "executeRequest(bytes32)" "$ID" --private-key $KEY --rpc-url $A --json > /dev/null
 settle
@@ -136,7 +142,7 @@ set -e
 [ $rc -eq 1 ] || { echo "FATAL: expected audit exit 1, got $rc"; exit 1; }
 
 echo "== re-register, audit (expect reenable-required — sticky), enable, audit (current) =="
-cast send $REG "addItem(bytes)" "$RLP" --value $COST --private-key $KEY --rpc-url $A --json > /dev/null
+cast send $REG "addItem(bytes)" "$RLP" --value $(deposit submissionBaseDeposit) --private-key $KEY --rpc-url $A --json > /dev/null
 cast rpc evm_increaseTime 10 --rpc-url $A > /dev/null && cast rpc evm_mine --rpc-url $A > /dev/null
 cast send $REG "executeRequest(bytes32)" "$ID" --private-key $KEY --rpc-url $A --json > /dev/null
 settle

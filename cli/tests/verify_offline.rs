@@ -5,14 +5,15 @@
 
 mod common;
 
-use alloy::primitives::{B256, U256};
+use alloy::primitives::{keccak256, Address, B256, U256};
 use common::{
-    build_fixture, build_fixture_with, build_fixture_with_policy_updates, court_extra_data,
-    eoa_address, keccak_empty,
+    build_fixture, build_fixture_full, build_fixture_with, build_fixture_with_policy_updates,
+    build_wrapper_fixture, court_extra_data, eoa_address, fixture_arbitrator, fixture_wrapper,
+    fixture_wrapper_pin, keccak_empty,
 };
 use intend::snapshot::{
-    extra_data_slots_for_len, read_snapshot_bounded, verify, Limits, Snapshot, VerifierProfile,
-    ARBITRATOR_SLOT,
+    extra_data_slots_for_len, read_snapshot_bounded, verify, AccountProof, Limits, Snapshot,
+    VerifierProfile, ARBITRATOR_SLOT,
 };
 
 fn expect_err(snapshot: &Snapshot, profile: &VerifierProfile, needle: &str) {
@@ -357,4 +358,68 @@ fn short_form_extra_data_verifies_and_is_pinned() {
     let mut p = f.profile.clone();
     p.arbitrator_extra_data = vec![0xaa, 0xbb, 0xcd].into();
     expect_err(&f.snapshot, &p, "arbitrator extra data pin violated");
+}
+
+#[test]
+fn accepts_the_court_or_the_pinned_wrapper_and_nothing_else() {
+    // Before the switch: the court still verifies under a profile that also
+    // accepts the wrapper.
+    let f = build_fixture();
+    let p = VerifierProfile {
+        arbitrator_wrapper: Some(fixture_wrapper_pin(1)),
+        ..f.profile.clone()
+    };
+    let stats = verify(&f.snapshot, &p, &Limits::default()).expect("court arm");
+    assert_eq!(stats.arbitrator, fixture_arbitrator());
+
+    // After: the registry names the wrapper with its envelope, and the
+    // wrapper's account is proven against the same root (through the wire
+    // encoding, so the snapshot field round-trips too).
+    let w = build_wrapper_fixture();
+    let raw = serde_json::to_vec(&w.snapshot).unwrap();
+    let (parsed, _) = read_snapshot_bounded(&raw, &Limits::default()).unwrap();
+    let stats = verify(&parsed, &w.profile, &Limits::default()).expect("wrapper arm");
+    assert_eq!(stats.arbitrator, fixture_wrapper());
+    assert_eq!(stats.slot_proofs_checked, 19); // the envelope is 192 bytes: main word + 6
+
+    // A profile that does not accept the wrapper fails closed, as before.
+    let old = VerifierProfile {
+        arbitrator_wrapper: None,
+        ..w.profile.clone()
+    };
+    expect_err(&w.snapshot, &old, "arbitrator pin violated");
+    // Another instance or build at the pinned address: the code hash differs.
+    let mut p = w.profile.clone();
+    p.arbitrator_wrapper.as_mut().unwrap().code_hash = keccak256(b"another build");
+    expect_err(&w.snapshot, &p, "codeHash");
+    // The wrapper's account proof withheld, or another account's honest proof
+    // offered in its place.
+    let mut s = w.snapshot.clone();
+    s.proofs.arbitrator_account = None;
+    expect_err(&s, &w.profile, "no account proof");
+    let mut s = w.snapshot.clone();
+    s.proofs.arbitrator_account = Some(AccountProof {
+        account_fields: w.snapshot.proofs.account_fields.clone(),
+        account: w.snapshot.proofs.account.clone(),
+    });
+    expect_err(&s, &w.profile, "arbitrator wrapper");
+    // Another epoch than the pinned one.
+    let p = VerifierProfile {
+        arbitrator_wrapper: Some(fixture_wrapper_pin(2)),
+        ..w.profile.clone()
+    };
+    expect_err(&w.snapshot, &p, "arbitrator extra data pin violated");
+    // The wrapper named with the bare court data instead of an envelope, and
+    // any other arbitrator with the court data, under the same profile.
+    for (arbitrator, needle) in [
+        (fixture_wrapper(), "arbitrator extra data pin violated"),
+        (Address::repeat_byte(0x66), "arbitrator pin violated"),
+    ] {
+        let g = build_fixture_full(0, arbitrator, &court_extra_data(19, 3));
+        let p = VerifierProfile {
+            anchor_state_root: g.profile.anchor_state_root,
+            ..w.profile.clone()
+        };
+        expect_err(&g.snapshot, &p, needle);
+    }
 }

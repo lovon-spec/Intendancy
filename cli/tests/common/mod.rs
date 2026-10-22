@@ -13,9 +13,10 @@ use alloy_trie::proof::ProofRetainer;
 use alloy_trie::{HashBuilder, Nibbles, EMPTY_ROOT_HASH};
 use intend::schema::Descriptor;
 use intend::snapshot::{
-    extra_data_slots_for_len, item_list_slot, item_status_slot, AccountFields, Anchor, Binding,
-    Proofs, Row, SlotProof, Snapshot, VerifierProfile, ARBITRATOR_EXTRA_DATA_SLOT, ARBITRATOR_SLOT,
-    GOVERNOR_SLOT, ITEM_LIST_SLOT, META_EVIDENCE_UPDATES_SLOT, SNAPSHOT_VERSION,
+    extra_data_slots_for_len, item_list_slot, item_status_slot, wrapper_envelope, AccountFields,
+    AccountProof, Anchor, Binding, Proofs, Row, SlotProof, Snapshot, VerifierProfile, WrapperPin,
+    ARBITRATOR_EXTRA_DATA_SLOT, ARBITRATOR_SLOT, GOVERNOR_SLOT, ITEM_LIST_SLOT,
+    META_EVIDENCE_UPDATES_SLOT, SNAPSHOT_VERSION,
 };
 
 pub const CHAIN_ID: u64 = 100;
@@ -159,6 +160,36 @@ pub fn fixture_governor() -> Address {
     Address::repeat_byte(0x44)
 }
 
+/// An Intendment arbitrator wrapper deployed in every fixture state: an
+/// account with code of its own next to the registry.
+pub fn fixture_wrapper() -> Address {
+    Address::repeat_byte(0x55)
+}
+
+/// The wrapper pin a profile carries: the fixture wrapper's code hash and the
+/// envelope around court 19 with three jurors for `epoch`.
+#[allow(dead_code)]
+pub fn fixture_wrapper_pin(epoch: u32) -> WrapperPin {
+    WrapperPin {
+        address: fixture_wrapper(),
+        code_hash: keccak256(b"fixture-wrapper-runtime-code"),
+        extra_data: wrapper_envelope(epoch, &court_extra_data(19, 3)),
+    }
+}
+
+/// A registry after the switch: the wrapper in slot 0, the epoch-1 envelope
+/// in slot 1, the wrapper's account proof in the snapshot, and a profile
+/// that pins the court and accepts the wrapper.
+#[allow(dead_code)]
+pub fn build_wrapper_fixture() -> Fixture {
+    let pin = fixture_wrapper_pin(1);
+    let mut f = build_fixture_full(0, fixture_wrapper(), &pin.extra_data);
+    f.profile.arbitrator = fixture_arbitrator();
+    f.profile.arbitrator_extra_data = court_extra_data(19, 3).into();
+    f.profile.arbitrator_wrapper = Some(pin);
+    f
+}
+
 /// `meta_evidence_updates` != 0 models a registry whose policy was changed
 /// after deployment — verification must fail closed on it unless the profile
 /// lists that version.
@@ -193,6 +224,17 @@ pub fn extra_data_storage_words(data: &[u8]) -> Vec<(B256, U256)> {
 
 #[allow(dead_code)]
 pub fn build_fixture_with(meta_evidence_updates: u64, extra_data: &[u8]) -> Fixture {
+    build_fixture_full(meta_evidence_updates, fixture_arbitrator(), extra_data)
+}
+
+/// The registry names `arbitrator` with `extra_data` (slots 0 and 1) and the
+/// profile pins exactly that; when it names the fixture wrapper, the snapshot
+/// carries the wrapper's account proof.
+pub fn build_fixture_full(
+    meta_evidence_updates: u64,
+    arbitrator: Address,
+    extra_data: &[u8],
+) -> Fixture {
     // Four items: statuses 1 (Registered), 2 (RegistrationRequested),
     // 3 (ClearingRequested), and 0 (Absent — status slot DELETED, exclusion).
     let statuses: [u8; 4] = [1, 2, 3, 0];
@@ -208,7 +250,7 @@ pub fn build_fixture_with(meta_evidence_updates: u64, extra_data: &[u8]) -> Fixt
     let arb_slot = B256::from(U256::from(ARBITRATOR_SLOT));
     storage.insert(
         arb_slot,
-        alloy::rlp::encode(U256::from_be_bytes(fixture_arbitrator().into_word().0)),
+        alloy::rlp::encode(U256::from_be_bytes(arbitrator.into_word().0)),
     );
     let extra_words = extra_data_storage_words(extra_data);
     for (slot, word) in &extra_words {
@@ -263,11 +305,29 @@ pub fn build_fixture_with(meta_evidence_updates: u64, extra_data: &[u8]) -> Fixt
         storage_root: EMPTY_ROOT_HASH,
         code_hash: keccak_empty(),
     };
+    let wrapper_account = TrieAccount {
+        nonce: 1,
+        balance: U256::from(0u64),
+        storage_root: EMPTY_ROOT_HASH,
+        code_hash: fixture_wrapper_pin(1).code_hash,
+    };
     let mut accounts = BTreeMap::new();
     accounts.insert(registry_address(), registry_account);
     accounts.insert(eoa_address(), eoa_account);
-    let (state_root, account_proofs) =
-        build_account_trie(&accounts, &[registry_address(), eoa_address()]);
+    accounts.insert(fixture_wrapper(), wrapper_account);
+    let (state_root, account_proofs) = build_account_trie(
+        &accounts,
+        &[registry_address(), eoa_address(), fixture_wrapper()],
+    );
+    let arbitrator_account = (arbitrator == fixture_wrapper()).then(|| AccountProof {
+        account_fields: AccountFields {
+            nonce: wrapper_account.nonce,
+            balance: wrapper_account.balance,
+            storage_root: wrapper_account.storage_root,
+            code_hash: wrapper_account.code_hash,
+        },
+        account: account_proofs[&fixture_wrapper()].clone(),
+    });
 
     // Assemble the snapshot envelope with the deduplicated node store.
     let mut nodes: BTreeMap<B256, Bytes> = BTreeMap::new();
@@ -326,6 +386,7 @@ pub fn build_fixture_with(meta_evidence_updates: u64, extra_data: &[u8]) -> Fixt
             account: account_proofs[&registry_address()].clone(),
             nodes,
             slots,
+            arbitrator_account,
         },
     };
     let profile = VerifierProfile {
@@ -333,8 +394,9 @@ pub fn build_fixture_with(meta_evidence_updates: u64, extra_data: &[u8]) -> Fixt
         chain_id: CHAIN_ID,
         registry: registry_address(),
         registry_code_hash: registry_code_hash(),
-        arbitrator: fixture_arbitrator(),
+        arbitrator,
         arbitrator_extra_data: Bytes::from(extra_data.to_vec()),
+        arbitrator_wrapper: None,
         governor: fixture_governor(),
         accepted_policy_updates: Vec::new(),
         anchor_block: anchor.block_number,
@@ -390,6 +452,7 @@ pub fn build_fixture_with(meta_evidence_updates: u64, extra_data: &[u8]) -> Fixt
                     path: Vec::new(),
                 },
             ],
+            arbitrator_account: None,
         },
     };
 

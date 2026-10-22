@@ -54,6 +54,8 @@ gpg --verify agent-skills-registry.toml.asc agent-skills-registry.toml
 
 Since 2026-09-09 the profile lists policy version 1 (listing policy 2.3) under `policy_updates`, so it accepts the registry at `metaEvidenceUpdates` 0 or 1 and fails closed on anything else. Listing a version changes the deployment context, so installs made under the alpha.1 profile are carried over with `intend migrate --from agent-skills-registry.toml` using the alpha.1 profile asset; a profile with any other trust field changed, or one that drops a version, is refused as a non-successor.
 
+The governor is due to put an Intendment wrapper in front of the court with `changeArbitrator(wrapper, envelope)` through the timelock. A profile with an `[arbitrator_wrapper]` table accepts either arbitrator, so it works before and after the switch: xKlerosLiquid with the court-19 extra data, or the pinned wrapper holding the envelope around that same court data, its code hash proven at every anchor; anything else still fails closed. The table is left to fill in before release: `tools/pin-wrapper.sh` prints it only after authenticating the instance, by building the intendment commit pinned in `tools/wrapper-provenance.env`, matching the factory's runtime code to that build and the wrapper's address to the factory's CREATE2 deployment for this registry and timelock. Adding it is a successor step for `intend migrate` like a new policy version. `tools/wrapper-fork.sh` rehearses the switch on a Gnosis fork.
+
 
 
 `profiles/agent-skills-registry.toml` is the deployment manifest for the Agent Skills Registry on Gnosis (registry `0x67DBE6A9597635074546e08B92eE617bF02168f9`, governor the timelock `0xc8Ba4c0AD3554EDB0a9A4C8D73Bf87410A313ADa`, court 19 with three jurors, the two MetaEvidence references the deployment emitted). It ships as a release asset and is verified before use. First verified against the live chain on 2026-09-07: header quorum from two operators, complete enumeration proven, an empty catalog.
@@ -69,7 +71,7 @@ intend --profile profile.toml catalog                # list the verified catalog
 intend --profile profile.toml install <name|0xitemID> --dir ./skill [--car tree.car]
 intend --profile profile.toml audit [--lockfile intend-lock.json]
 intend --profile profile.toml enable ./skill         # clear a sticky suspension (fresh proof + integrity required)
-intend --profile new.toml migrate --from old.toml    # carry every entry across a policy-version transition
+intend --profile new.toml migrate --from old.toml    # carry every entry across a policy-version or wrapper transition
 ```
 
 - `update` — quorum-anchors a finalized header, obtains a complete snapshot
@@ -79,7 +81,9 @@ intend --profile new.toml migrate --from old.toml    # carry every entry across 
   enumeration, the POLICY VERSION — `metaEvidenceUpdates` proven to be a version
   the profile accepts (0, or one it lists with its announced references), the
   ARBITRATOR PIN — slot 0 and the `arbitratorExtraData` words proven equal to the
-  profile's `arbitrator`/`arbitrator_extra_data`, and the GOVERNOR PIN — slot 3
+  profile's `arbitrator`/`arbitrator_extra_data`, or to its `[arbitrator_wrapper]`
+  and that wrapper's envelope with the wrapper's code hash proven at the same
+  anchor, and the GOVERNOR PIN — slot 3
   proven equal to the profile's `governor`, all at every anchor, so a governor's
   policy change, court switch or self-replacement fails closed until a new signed
   profile is installed — statuses in both zero-proof forms, descriptor
@@ -161,7 +165,8 @@ verified under one policy set is never consumed under another silently.
 explicitly. It requires the new profile to be a strict successor of the old
 one — the same chain, genesis, registry, code hash, arbitrator and extra data,
 governor and deployment MetaEvidence pins, and the old profile's accepted
-versions as a prefix of the new one's, with at least one version added;
+versions as a prefix of the new one's, with at least one version added or an
+`[arbitrator_wrapper]` added where the old profile had none;
 anything else is a different deployment or a different trust decision and is
 refused with the field named. Every entry must be bound to the old context
 (entries already at the new context are skipped). Each entry then gets a local
@@ -229,6 +234,11 @@ registration_meta_evidence = "/ipfs/…" # the references that announcement decl
 clearing_meta_evidence = "/ipfs/…"
 provider_rpc = "https://rpc-c…"  # untrusted snapshot/proof source (verified locally)
 gateways = ["https://ipfs-gateway…"] # untrusted CAR sources (every block hash-checked)
+
+[arbitrator_wrapper]                   # OPTIONAL: an Intendment wrapper accepted in front of the court
+address = "0x…"                        # the instance slot 0 may name instead of `arbitrator`
+code_hash = "0x…"                      # its runtime code hash (immutables included), proven at every anchor
+epoch = 1                              # slot 1 then holds abi.encode(uint8(1), uint32(epoch), arbitrator_extra_data)
 ```
 
 The two MetaEvidence references must be canonical `/ipfs/<CIDv1-base32>[/path]`

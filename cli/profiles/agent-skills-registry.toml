@@ -37,3 +37,18 @@ gateways = ["https://trustless-gateway.link", "https://dweb.link", "https://ipfs
 updates = 1
 registration_meta_evidence = "/ipfs/bafybeifhlfq6wtjhmnywfklavuj2jr57nyawwfpcepccwgxadisrdjnvce/registration-meta-evidence.json"
 clearing_meta_evidence = "/ipfs/bafybeifgs26pc2yuvt34bs6gjavtg7ke563fov22aoyojs6z6fdckzehm4/clearing-meta-evidence.json"
+
+# The Intendment wrapper (IntendmentArbitrator) that the timelock's changeArbitrator(wrapper,
+# envelope) puts in front of the court. Either arbitrator then verifies: xKlerosLiquid with the
+# extra data above, or this instance with abi.encode(uint8(1), uint32(epoch),
+# arbitrator_extra_data) and its runtime code hash proven at every anchor; the hash fixes its
+# immutables (HOST the registry, K xKlerosLiquid, GOVERNOR the timelock). Anything else fails
+# closed. FILL IN BEFORE RELEASE: the wrapper is not deployed yet; cli/tools/pin-wrapper.sh
+# authenticates the deployed instance (the factory runs the build of the commit pinned in
+# cli/tools/wrapper-provenance.env and the wrapper is its CREATE2 deployment for this registry)
+# and prints this table. Adding it changes the deployment context: installs made under the
+# previous profile are carried over with `intend migrate --from`.
+# [arbitrator_wrapper]
+# address = "0x…"
+# code_hash = "0x…"
+# epoch = 1
