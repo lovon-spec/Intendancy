@@ -243,9 +243,11 @@ struct TokenlistArgs {
     #[arg(long, default_value = "ipfs://")]
     logo_base: String,
     /// The list's name (the token-lists schema allows ASCII letters, digits,
-    /// underscore and space, 1 to 30 characters).
-    #[arg(long, default_value = lgtcr::DEFAULT_LIST_NAME)]
-    name: String,
+    /// underscore and space, 1 to 30 characters). Defaults to "Kleros Tokens
+    /// Verified" when this run exports the snapshot, "Kleros Tokens" when it
+    /// renders one read from --items, which it cannot re-verify.
+    #[arg(long)]
+    name: Option<String>,
     #[arg(long, default_value = "tokens.json")]
     out: PathBuf,
 }
@@ -277,8 +279,9 @@ async fn main() -> Result<()> {
     }
 }
 
+/// The command line as provenance records it, its URLs cut to their origins.
 fn command_line() -> String {
-    std::env::args().collect::<Vec<_>>().join(" ")
+    lgtcr::redact_urls(&std::env::args().collect::<Vec<_>>().join(" "))
 }
 
 /// Run the verified export and write the snapshot and its provenance.
@@ -316,10 +319,11 @@ async fn run_export(
         code_hash: format!("{}", outcome.code_hash),
         anchor: outcome.snapshot.anchor.clone(),
         anchor_source: outcome.anchor_source.clone(),
-        anchor_rpcs: cfg.anchor_rpcs.clone(),
-        log_rpcs: cfg.log_rpcs.clone(),
-        provider_rpc: cfg.provider_rpc.clone(),
-        gateways: cfg.gateways.clone(),
+        // Origins only: an endpoint's path or query may hold a key.
+        anchor_rpcs: cfg.anchor_rpcs.iter().map(|u| lgtcr::redact_urls(u)).collect(),
+        log_rpcs: cfg.log_rpcs.iter().map(|u| lgtcr::redact_urls(u)).collect(),
+        provider_rpc: lgtcr::redact_urls(&cfg.provider_rpc),
+        gateways: cfg.gateways.iter().map(|u| lgtcr::redact_urls(u)).collect(),
         from_block: outcome.from_block,
         from_block_source: outcome.from_block_source.clone(),
         included_statuses: outcome.snapshot.included_statuses.clone(),
@@ -386,10 +390,34 @@ async fn export(a: ExportArgs) -> Result<()> {
     Ok(())
 }
 
+/// The list's name: `--name` or the default for how the snapshot was
+/// obtained. A snapshot read from --items is a file, not a proof: it carries
+/// no storage proofs or log agreement, so nothing in it can be re-verified
+/// offline, and checking it online is the export itself (rerun at its anchor
+/// and compare). Only a list whose snapshot this run exported is called
+/// verified; one rendered from a file gets a name that does not claim it.
+fn list_name(given: Option<&str>, verified: bool) -> Result<String> {
+    let name = match (given, verified) {
+        (Some(n), _) => n.to_string(),
+        (None, true) => lgtcr::DEFAULT_LIST_NAME.to_string(),
+        (None, false) => lgtcr::UNVERIFIED_LIST_NAME.to_string(),
+    };
+    lgtcr::validate_list_name(&name)?;
+    if !verified
+        && name
+            .split([' ', '_'])
+            .any(|w| w.eq_ignore_ascii_case("verified"))
+    {
+        bail!("{name:?} claims verification, but a list rendered from --items is not verified by this run; export in the same run (drop --items) or choose another name");
+    }
+    Ok(name)
+}
+
 async fn tokenlist(a: TokenlistArgs) -> Result<()> {
     // Before any network or file work: a name the schema rejects would
     // waste the export.
-    lgtcr::validate_list_name(&a.name).wrap_err("--name")?;
+    let verified = a.items.is_none();
+    let name = list_name(a.name.as_deref(), verified).wrap_err("--name")?;
     let snapshot: ListSnapshot = match &a.items {
         Some(path) => {
             let bytes =
@@ -418,7 +446,7 @@ async fn tokenlist(a: TokenlistArgs) -> Result<()> {
         None => None,
     };
     let list_out = TokenList {
-        name: a.name.clone(),
+        name,
         timestamp: lgtcr::rfc3339(snapshot.anchor.timestamp),
         version: lgtcr::bump_version(previous.as_ref(), &tokens),
         tokens,
@@ -468,6 +496,8 @@ async fn tokenlist(a: TokenlistArgs) -> Result<()> {
         "{}",
         serde_json::json!({
             "ok": true,
+            // false: rendered from --items, whose anchor and statuses this run did not check.
+            "verified": verified,
             "anchorBlock": snapshot.anchor.number,
             "anchorMode": snapshot.anchor.mode,
             "name": list_out.name,
@@ -482,6 +512,21 @@ async fn tokenlist(a: TokenlistArgs) -> Result<()> {
         })
     );
     Ok(())
+}
+
+/// Snapshot text as the terminal shows it: control characters (ESC, which
+/// starts ANSI and OSC sequences, among them) and bidirectional overrides
+/// are printed escaped, so an entry cannot restyle, hide or reorder output.
+fn shown(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if c.is_control() || matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}') {
+            out.extend(c.escape_default());
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 fn lookup(a: LookupArgs) -> Result<()> {
@@ -507,12 +552,17 @@ fn lookup(a: LookupArgs) -> Result<()> {
             "{} of {} items match (list {}, anchor block {}, {})",
             hits.len(),
             snapshot.items.len(),
-            snapshot.list,
+            shown(&snapshot.list),
             snapshot.anchor.number,
-            snapshot.anchor.mode
+            shown(&snapshot.anchor.mode)
         );
         for it in hits {
-            println!("- {} [{}] {}", it.item_id, it.status_name, it.path);
+            println!(
+                "- {} [{}] {}",
+                shown(&it.item_id),
+                shown(&it.status_name),
+                shown(&it.path)
+            );
             if let Some(map) = it.values.as_object() {
                 for (k, v) in map {
                     let text = match v {
@@ -520,7 +570,7 @@ fn lookup(a: LookupArgs) -> Result<()> {
                         other => other.to_string(),
                     };
                     if !text.is_empty() {
-                        println!("    {k}: {text}");
+                        println!("    {}: {}", shown(k), shown(&text));
                     }
                 }
             }
@@ -636,7 +686,20 @@ mod tests {
         let Cmd::Tokenlist(a) = Cli::try_parse_from(argv).unwrap().cmd else {
             unreachable!()
         };
-        assert_eq!(a.name, "Kleros Tokens Verified");
-        lgtcr::validate_list_name(&a.name).unwrap();
+        assert_eq!(a.name, None);
+        assert_eq!(list_name(None, true).unwrap(), "Kleros Tokens Verified");
+        // A list rendered from a file this run did not verify never says it is.
+        assert_eq!(list_name(None, false).unwrap(), "Kleros Tokens");
+        assert!(list_name(Some("Kleros Tokens Verified"), false).is_err());
+        assert!(list_name(Some("Kleros Tokens Unverified"), false).is_ok());
+    }
+
+    #[test]
+    fn lookup_text_escapes_what_a_terminal_would_act_on() {
+        assert_eq!(
+            shown("Tag \u{1b}]8;;https://x.example\u{7}ok\u{202e}\tend"),
+            "Tag \\u{1b}]8;;https://x.example\\u{7}ok\\u{202e}\\tend"
+        );
+        assert_eq!(shown("wxDAI \"wrapped\" 🙂"), "wxDAI \"wrapped\" 🙂");
     }
 }

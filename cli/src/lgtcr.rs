@@ -1632,6 +1632,9 @@ pub struct TokenList {
 /// `^[\w ]+$` (ASCII letters, digits, underscore, space), 1 to 30
 /// characters: no comma, no hyphen.
 pub const DEFAULT_LIST_NAME: &str = "Kleros Tokens Verified";
+/// The default name of a list rendered from a snapshot file, which the run
+/// did not verify.
+pub const UNVERIFIED_LIST_NAME: &str = "Kleros Tokens";
 
 /// Limits the Uniswap token-list schema states (vendored, pinned, in
 /// `fixtures/uniswap/`; `schema_checks_match_the_vendored_schema` holds
@@ -2023,6 +2026,44 @@ pub fn parse_reference_list(bytes: &[u8]) -> Result<Vec<Token>> {
 
 // ---------- provenance ----------
 
+/// `text` with every URL in it cut down to its origin (`scheme://host[:port]`):
+/// userinfo, path and query can carry credentials (an RPC key in the path, a
+/// gateway token in the query), and the files an export writes are meant to
+/// be published.
+pub fn redact_urls(text: &str) -> String {
+    let origin = |raw: &str| match url::Url::parse(raw) {
+        Ok(u) => match (u.host_str(), u.port()) {
+            (Some(host), Some(port)) => format!("{}://{host}:{port}", u.scheme()),
+            (Some(host), None) => format!("{}://{host}", u.scheme()),
+            (None, _) => "[redacted URL]".to_string(),
+        },
+        Err(_) => "[redacted URL]".to_string(),
+    };
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(sep) = rest.find("://") {
+        let scheme_len = rest.as_bytes()[..sep]
+            .iter()
+            .rev()
+            .take_while(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.'))
+            .count();
+        let start = sep - scheme_len;
+        let end = rest[sep..]
+            .find(|c: char| c.is_whitespace() || matches!(c, ')' | '"' | '\'' | '<' | '>'))
+            .map_or(rest.len(), |i| sep + i);
+        // Punctuation after a URL ("{url}: error") stays in the text.
+        let end = start
+            + rest[start..end]
+                .trim_end_matches([':', ',', '.', ';'])
+                .len();
+        out.push_str(&rest[..start]);
+        out.push_str(&origin(&rest[start..end]));
+        rest = &rest[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProvenanceAnchor {
     pub number: u64,
@@ -2251,7 +2292,8 @@ pub async fn export_list(
             (
                 b,
                 format!(
-                    "discovered via {rpc}, the earliest of the {} log sources' starts (first window with no logs and no code)",
+                    "discovered via {}, the earliest of the {} log sources' starts (first window with no logs and no code)",
+                    redact_urls(&rpc),
                     log_sources.len()
                 ),
             )
@@ -2402,7 +2444,7 @@ pub fn records_from(
                 (
                     serde_json::Value::Null,
                     serde_json::Value::Null,
-                    Some(format!("{e:#}")),
+                    Some(redact_urls(&format!("{e:#}"))),
                 )
             }
             None => (serde_json::Value::Null, serde_json::Value::Null, None),
@@ -3152,6 +3194,22 @@ mod tests {
                 "{err}"
             );
         }
+    }
+
+    #[test]
+    fn published_urls_keep_only_their_origin() {
+        assert_eq!(
+            redact_urls("https://user:pw@rpc.example:8443/v3/KEY?token=T#f"),
+            "https://rpc.example:8443"
+        );
+        assert_eq!(
+            redact_urls("curate-export export --log-rpc=HTTPS://Rpc.Example/KEY --gateway https://gw.example/ipfs?t=1 --out items.json"),
+            "curate-export export --log-rpc=https://rpc.example --gateway https://gw.example --out items.json"
+        );
+        assert_eq!(
+            redact_urls("no gateway served block bafy: https://gw.example/K/ipfs/bafy?format=raw: HTTP status 500 (for url (https://gw.example/K/ipfs/bafy?format=raw))"),
+            "no gateway served block bafy: https://gw.example: HTTP status 500 (for url (https://gw.example))"
+        );
     }
 
     #[test]

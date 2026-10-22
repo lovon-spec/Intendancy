@@ -11,7 +11,8 @@
 #     disagree or a proof does not verify);
 #   - same-anchor determinism: the Address Tags Query export rerun at the
 #     first run's anchor (--anchor-block) is byte-identical to the first;
-#   - the token list carries the default name and was written (the tool
+#   - the token list, rendered from the Tokens snapshot file, is written
+#     under the unverified default name with verified: false (the tool
 #     validates it against the token-lists schema before writing).
 # Informational (different finalized anchors can legitimately differ):
 #   - the diff against t2crtokens.eth and the USDC lookup;
@@ -70,7 +71,7 @@ import json, sys
 work, usdc = sys.argv[1], sys.argv[2].lower()
 s = json.load(open(f"{work}/tokenlist-summary.json")); ours = json.load(open(f"{work}/tokenlist.json")); diff = json.load(open(f"{work}/diff.json"))
 assert s["ok"] is True, s
-assert ours["name"] == "Kleros Tokens Verified" == s["name"], ours["name"]
+assert ours["name"] == "Kleros Tokens" == s["name"] and s["verified"] is False, (ours["name"], s["verified"])
 assert 1 <= len(ours["tokens"]) <= 10000 and ours["tokens"] and ours["version"]["major"] >= 1
 mine = {(t["chainId"], t["address"].lower()) for t in ours["tokens"]}
 ours_only = {(t["chainId"], t["address"].lower()) for t in diff["oursOnly"]}
