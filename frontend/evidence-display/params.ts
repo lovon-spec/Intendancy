@@ -21,8 +21,11 @@ const asItemID = (value: unknown): `0x${string}` | undefined =>
   typeof value === "string" && /^0x[0-9a-fA-F]{64}$/.test(value) ? (value as `0x${string}`) : undefined;
 
 /**
- * The Kleros court loads the display as `index.html?{"disputeID":…,"arbitrableContractAddress":…,…}`,
- * URL-encoded. Our own site uses `?registry=0x…&item=0x…[&chain=100][&rpc=…]`.
+ * The Kleros court picks the form from the MetaEvidence `_v`: `"0"` (or none) gets
+ * `index.html?{"disputeID":…,"arbitrableContractAddress":…,…}`, URL-encoded; any other
+ * version, ours included (`"1.0.0"`), gets the same keys as a query string
+ * (kleros/court src/components/case-details-card.jsx). Our own site uses
+ * `?registry=0x…&item=0x…[&chain=100][&rpc=…]`.
  */
 export function readParams(search: string): DisplayParams {
   const raw = search.startsWith("?") ? search.slice(1) : search;
@@ -47,12 +50,13 @@ export function readParams(search: string): DisplayParams {
     };
   }
   const query = new URLSearchParams(raw);
+  const get = (courtKey: string, shortKey: string) => query.get(courtKey) ?? query.get(shortKey);
   return {
-    arbitrableContractAddress: asAddress(query.get("registry")),
+    arbitrableContractAddress: asAddress(get("arbitrableContractAddress", "registry")),
     itemID: asItemID(query.get("item")),
-    disputeID: asString(query.get("dispute")),
-    arbitratorContractAddress: asAddress(query.get("arbitrator")),
-    arbitrableChainID: asNumber(query.get("chain")),
-    arbitrableJsonRpcUrl: asString(query.get("rpc")),
+    disputeID: asString(get("disputeID", "dispute")),
+    arbitratorContractAddress: asAddress(get("arbitratorContractAddress", "arbitrator")),
+    arbitrableChainID: asNumber(get("arbitrableChainID", "chain")),
+    arbitrableJsonRpcUrl: asString(get("arbitrableJsonRpcUrl", "rpc")),
   };
 }

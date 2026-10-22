@@ -549,7 +549,8 @@ export async function fetchTreeCar(
   throw new Error(`no gateway delivered the CAR: ${failures.join("; ")}`);
 }
 
-async function readCapped(response: Response, maxBytes: number): Promise<Uint8Array | null> {
+/** The response body, or null as soon as it passes `maxBytes`. */
+export async function readCapped(response: Response, maxBytes: number): Promise<Uint8Array | null> {
   if (!response.body) {
     const buffer = new Uint8Array(await response.arrayBuffer());
     return buffer.length > maxBytes ? null : buffer;
