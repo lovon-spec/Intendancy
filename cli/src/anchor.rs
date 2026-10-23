@@ -18,12 +18,15 @@
 //!   stale beyond `MAX_ANCHOR_AGE_SECS` fails closed, and FUTURE skew beyond
 //!   `MAX_FUTURE_SKEW_SECS` fails closed rather than counting as age zero.
 
+use std::sync::Arc;
+
 use alloy::primitives::B256;
-use alloy::providers::Provider;
+use alloy::providers::{DynProvider, Provider};
 use alloy::rpc::types::BlockId;
 use eyre::{bail, eyre, Result};
 
 use crate::profile::Profile;
+use crate::transport::RpcStats;
 
 /// Printed with every result that depends on this anchor mode.
 pub const MODE_LABEL: &str =
@@ -59,14 +62,91 @@ where
         .map_err(|_| eyre!("{what}: deadline of {RPC_DEADLINE_SECS}s exceeded"))?
 }
 
-fn provider_for(rpc: &str) -> Result<impl Provider + Clone> {
-    crate::transport::capped_provider(rpc)
+/// The chain identity every source is authenticated against: chain id and
+/// genesis hash (spec §7). A profile carries one; tools that pin a chain
+/// without a registry profile (the Light Curate export) build one directly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChainPin {
+    pub chain_id: u64,
+    pub genesis_hash: B256,
+}
+
+impl From<&Profile> for ChainPin {
+    fn from(p: &Profile) -> Self {
+        Self {
+            chain_id: p.chain_id,
+            genesis_hash: p.genesis_hash,
+        }
+    }
 }
 
 /// Authenticate one RPC source against the pinned chain identity: chainId and
 /// genesis hash (spec §7). Used for anchor sources AND proof RPCs.
 pub async fn authenticate_source(rpc: &str, profile: &Profile) -> Result<()> {
-    let provider = provider_for(rpc)?;
+    authenticate_source_pin(rpc, &ChainPin::from(profile)).await
+}
+
+/// `authenticate_source` against a bare chain pin.
+pub async fn authenticate_source_pin(rpc: &str, pin: &ChainPin) -> Result<()> {
+    Source::authenticate(rpc, pin, &Arc::default())
+        .await
+        .map(|_| ())
+}
+
+/// One RPC source whose chain identity this run has verified (chainId and
+/// genesis hash against the pin). Later calls reuse its transport, so a run
+/// authenticates each source once and every attempt it makes is counted in
+/// the shared `RpcStats`.
+#[derive(Clone)]
+pub struct Source {
+    pub rpc: String,
+    provider: DynProvider,
+}
+
+impl std::fmt::Debug for Source {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Source").field("rpc", &self.rpc).finish()
+    }
+}
+
+impl Source {
+    /// Authenticate `rpc` against `pin` (two calls: `eth_chainId` and the
+    /// genesis hash) and keep its transport for the rest of the run.
+    pub async fn authenticate(rpc: &str, pin: &ChainPin, stats: &Arc<RpcStats>) -> Result<Self> {
+        let provider = crate::transport::capped_provider_counted(rpc, stats.clone())?.erased();
+        authenticate_provider(&provider, rpc, pin).await?;
+        Ok(Self {
+            rpc: rpc.to_string(),
+            provider,
+        })
+    }
+
+    pub fn provider(&self) -> &DynProvider {
+        &self.provider
+    }
+
+    /// A header from this source with its integrity AUTHENTICATED: the hash
+    /// recomputed from the returned fields must equal the reported hash.
+    /// Returns (number, reported hash, state root, timestamp).
+    pub async fn header(&self, id: BlockId) -> Result<(u64, B256, B256, u64)> {
+        header_via(&self.provider, &self.rpc, id).await
+    }
+}
+
+/// Authenticate every source in `rpcs`, in order, sharing one counter.
+pub async fn authenticate_all(
+    rpcs: &[String],
+    pin: &ChainPin,
+    stats: &Arc<RpcStats>,
+) -> Result<Vec<Source>> {
+    let mut out = Vec::with_capacity(rpcs.len());
+    for rpc in rpcs {
+        out.push(Source::authenticate(rpc, pin, stats).await?);
+    }
+    Ok(out)
+}
+
+async fn authenticate_provider(provider: &DynProvider, rpc: &str, pin: &ChainPin) -> Result<()> {
     let chain_id = with_deadline(&format!("{rpc} eth_chainId"), async {
         provider
             .get_chain_id()
@@ -74,10 +154,10 @@ pub async fn authenticate_source(rpc: &str, profile: &Profile) -> Result<()> {
             .map_err(|e| eyre!("{rpc}: {e}"))
     })
     .await?;
-    if chain_id != profile.chain_id {
+    if chain_id != pin.chain_id {
         bail!(
             "{rpc}: serves chainId {chain_id}, profile pins {} — wrong chain",
-            profile.chain_id
+            pin.chain_id
         );
     }
     // The genesis check is a pure IDENTITY pin: the reported hash must equal
@@ -88,7 +168,7 @@ pub async fn authenticate_source(rpc: &str, profile: &Profile) -> Result<()> {
     // standard header encoding, so `hash_slow` cannot reproduce it — verified
     // empirically (reported 0x4f1dd231… vs standard-encoding 0x4590cf92…).
     // Field recomputation applies to every header whose FIELDS we trust
-    // (`authenticated_header`, used for all anchor-era headers).
+    // (`header_via`, used for all anchor-era headers).
     // Because only the hash is consumed, the block is read as raw JSON rather
     // than through the typed header: Gnosis's AuRa genesis carries `signature`
     // and `step` fields and, from some public nodes (PublicNode, observed
@@ -102,11 +182,11 @@ pub async fn authenticate_source(rpc: &str, profile: &Profile) -> Result<()> {
     })
     .await?;
     let reported = genesis_hash_from_json(&genesis).map_err(|e| eyre!("{rpc}: {e}"))?;
-    if reported != profile.genesis_hash {
+    if reported != pin.genesis_hash {
         bail!(
             "{rpc}: genesis hash {} != pinned {} — wrong chain or tampered source",
             reported,
-            profile.genesis_hash
+            pin.genesis_hash
         );
     }
     Ok(())
@@ -131,8 +211,11 @@ fn genesis_hash_from_json(block: &serde_json::Value) -> Result<B256> {
 /// Fetch a header and AUTHENTICATE its integrity: the hash recomputed from the
 /// returned fields must equal the reported hash. Returns
 /// (number, reported hash, state root, timestamp).
-async fn authenticated_header(rpc: &str, id: BlockId) -> Result<(u64, B256, B256, u64)> {
-    let provider = provider_for(rpc)?;
+async fn header_via(
+    provider: &DynProvider,
+    rpc: &str,
+    id: BlockId,
+) -> Result<(u64, B256, B256, u64)> {
     let block = with_deadline(&format!("{rpc} get_block"), async {
         provider
             .get_block(id)
@@ -186,27 +269,42 @@ fn check_time_bounds(timestamp: u64) -> Result<()> {
 /// reports, then require every source to serve an identical authenticated
 /// header (hash, stateRoot, timestamp) at that height.
 pub async fn finalized_quorum(profile: &Profile) -> Result<QuorumAnchor> {
-    let rpcs = &profile.anchor_rpcs;
+    finalized_quorum_rpcs(&profile.anchor_rpcs, &ChainPin::from(profile)).await
+}
+
+/// `finalized_quorum` over an explicit source list and a bare chain pin.
+pub async fn finalized_quorum_rpcs(rpcs: &[String], pin: &ChainPin) -> Result<QuorumAnchor> {
     if rpcs.len() < 2 {
         bail!("header quorum needs at least 2 RPC endpoints");
     }
+    let sources = authenticate_all(rpcs, pin, &Arc::default()).await?;
+    finalized_quorum_sources(&sources).await
+}
+
+/// `finalized_quorum` over sources this run already authenticated: one
+/// finalized-head call per source, then one header call per source at the
+/// agreed (lowest) height. The finalized heights just observed are what the
+/// agreed height is checked against; no source is asked twice.
+pub async fn finalized_quorum_sources(sources: &[Source]) -> Result<QuorumAnchor> {
+    if sources.len() < 2 {
+        bail!("header quorum needs at least 2 RPC endpoints");
+    }
     let mut min_number = u64::MAX;
-    for rpc in rpcs {
-        authenticate_source(rpc, profile).await?;
-        let (number, _, _, _) = authenticated_header(rpc, BlockId::finalized()).await?;
+    for source in sources {
+        let (number, _, _, _) = source.header(BlockId::finalized()).await?;
         min_number = min_number.min(number);
     }
     if min_number == u64::MAX || min_number == 0 {
         bail!("no usable finalized height from quorum sources");
     }
-    let (hash, state_root, timestamp) = quorum_at_inner(profile, min_number, false).await?;
+    let (hash, state_root, timestamp) = agreed_header(sources, min_number).await?;
     check_time_bounds(timestamp)?;
     Ok(QuorumAnchor {
         block_number: min_number,
         block_hash: hash,
         state_root,
         timestamp,
-        sources: rpcs.len(),
+        sources: sources.len(),
     })
 }
 
@@ -215,40 +313,53 @@ pub async fn finalized_quorum(profile: &Profile) -> Result<QuorumAnchor> {
 /// authenticated (hash, stateRoot, timestamp) for that height, and the height
 /// must be at or below every source's finalized head.
 pub async fn quorum_at(profile: &Profile, number: u64) -> Result<(B256, B256, u64)> {
-    quorum_at_inner(profile, number, true).await
+    let sources = authenticate_all(
+        &profile.anchor_rpcs,
+        &ChainPin::from(profile),
+        &Arc::default(),
+    )
+    .await?;
+    quorum_at_sources(&sources, number).await
 }
 
-async fn quorum_at_inner(
-    profile: &Profile,
-    number: u64,
-    authenticate: bool,
-) -> Result<(B256, B256, u64)> {
-    let rpcs = &profile.anchor_rpcs;
-    if rpcs.len() < 2 {
+/// `quorum_at` over authenticated sources: each source's finalized head must
+/// be at or beyond `number`, and every source must serve the same
+/// authenticated header there.
+pub async fn quorum_at_sources(sources: &[Source], number: u64) -> Result<(B256, B256, u64)> {
+    if sources.len() < 2 {
         bail!("header quorum needs at least 2 RPC endpoints");
     }
-    let mut agreed: Option<(B256, B256, u64)> = None;
-    for rpc in rpcs {
-        if authenticate {
-            authenticate_source(rpc, profile).await?;
-        }
-        let (fin_number, _, _, _) = authenticated_header(rpc, BlockId::finalized()).await?;
+    for source in sources {
+        let (fin_number, _, _, _) = source.header(BlockId::finalized()).await?;
         if number > fin_number {
-            bail!("{rpc}: block {number} is beyond its finalized head {fin_number}");
+            bail!(
+                "{}: block {number} is beyond its finalized head {fin_number}",
+                source.rpc
+            );
         }
+    }
+    agreed_header(sources, number).await
+}
+
+/// The header at `number` that every source serves identically
+/// (hash, stateRoot, timestamp), each copy authenticated against its hash.
+async fn agreed_header(sources: &[Source], number: u64) -> Result<(B256, B256, u64)> {
+    let mut agreed: Option<(B256, B256, u64)> = None;
+    for source in sources {
         let (got_number, hash, state_root, timestamp) =
-            authenticated_header(rpc, BlockId::number(number)).await?;
+            source.header(BlockId::number(number)).await?;
         if got_number != number {
-            bail!("{rpc}: asked for block {number}, got {got_number}");
+            bail!("{}: asked for block {number}, got {got_number}", source.rpc);
         }
         match &agreed {
             None => agreed = Some((hash, state_root, timestamp)),
             Some((h, s, t)) => {
                 if *h != hash || *s != state_root || *t != timestamp {
                     bail!(
-                        "header-quorum DISAGREEMENT at block {number}: {rpc} serves \
+                        "header-quorum DISAGREEMENT at block {number}: {} serves \
                          hash {hash} / stateRoot {state_root} / time {timestamp}, another \
-                         source served {h} / {s} / {t} — refusing this anchor"
+                         source served {h} / {s} / {t} — refusing this anchor",
+                        source.rpc
                     );
                 }
             }
@@ -261,7 +372,24 @@ async fn quorum_at_inner(
 /// snapshots anchored below the current finalized head). Applies the same time
 /// bounds as the live quorum.
 pub async fn quorum_anchor_at(profile: &Profile, number: u64) -> Result<QuorumAnchor> {
-    let (hash, state_root, timestamp) = quorum_at(profile, number).await?;
+    let sources = authenticate_all(
+        &profile.anchor_rpcs,
+        &ChainPin::from(profile),
+        &Arc::default(),
+    )
+    .await?;
+    pinned_quorum_sources(&sources, number).await
+}
+
+/// A QuorumAnchor at a caller-chosen finalized height over authenticated
+/// sources (a rerun at an earlier export's anchor): every source's finalized
+/// head must cover it and every source must serve the same header. Only the
+/// future-skew bound applies; the height is historical by choice.
+pub async fn pinned_quorum_sources(sources: &[Source], number: u64) -> Result<QuorumAnchor> {
+    if number == 0 {
+        bail!("a pinned anchor height must be positive");
+    }
+    let (hash, state_root, timestamp) = quorum_at_sources(sources, number).await?;
     if timestamp > unix_now()?.saturating_add(MAX_FUTURE_SKEW_SECS) {
         bail!("anchored header timestamp is beyond the future-skew bound — failing closed");
     }
@@ -270,7 +398,7 @@ pub async fn quorum_anchor_at(profile: &Profile, number: u64) -> Result<QuorumAn
         block_hash: hash,
         state_root,
         timestamp,
-        sources: profile.anchor_rpcs.len(),
+        sources: sources.len(),
     })
 }
 

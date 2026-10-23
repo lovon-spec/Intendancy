@@ -80,6 +80,52 @@ impl Cid {
         Ok(Self { codec, digest })
     }
 
+    /// The 34-byte CIDv0 binary form (sha2-256 multihash, dag-pb implied), which
+    /// legacy Kleros lists link to. Kept apart from `from_bytes`: the skills
+    /// registry's policy requires CIDv1 everywhere, and `intend`'s tree walk
+    /// must keep rejecting a v0 link.
+    pub fn from_bytes_v0(raw: &[u8]) -> Result<Self> {
+        if raw.len() != 34 || raw[0] != 0x12 || raw[1] != 0x20 {
+            bail!("not a CIDv0 sha2-256/32 multihash");
+        }
+        let mut digest = [0u8; 32];
+        digest.copy_from_slice(&raw[2..]);
+        Ok(Self {
+            codec: CODEC_DAG_PB,
+            digest,
+        })
+    }
+
+    /// Either binary form: CIDv1 (36 bytes) or CIDv0 (34 bytes).
+    pub fn from_bytes_any(raw: &[u8]) -> Result<Self> {
+        if raw.len() == 34 {
+            Self::from_bytes_v0(raw)
+        } else {
+            Self::from_bytes(raw)
+        }
+    }
+
+    /// Either text form: canonical CIDv1 base32 (`b…`) or CIDv0 base58btc
+    /// (`Qm…`). Legacy lists carry CIDv0 paths; the registry itself does not.
+    pub fn parse_any(s: &str) -> Result<Self> {
+        if s.starts_with("Qm") {
+            let raw = base58_decode(s).wrap_err("CIDv0 base58 decode")?;
+            return Self::from_bytes_v0(&raw);
+        }
+        Self::parse_canonical(s)
+    }
+
+    /// Text form matching the CID's version: CIDv1 canonical base32, or the
+    /// base58btc CIDv0 string when `v0` is requested for a dag-pb CID.
+    pub fn to_string_v0(self) -> Result<String> {
+        if self.codec != CODEC_DAG_PB {
+            bail!("only dag-pb CIDs have a CIDv0 form");
+        }
+        let mut raw = vec![0x12, 0x20];
+        raw.extend_from_slice(&self.digest);
+        Ok(base58_encode(&raw))
+    }
+
     /// Canonical text form (multibase base32 lower, no padding).
     pub fn to_string_canonical(self) -> String {
         format!(
@@ -101,6 +147,108 @@ impl Cid {
             .decode(rest.to_uppercase().as_bytes())
             .wrap_err("CID base32 decode")?;
         Self::from_bytes(&raw)
+    }
+}
+
+// ---------- base58btc (CIDv0 text form only) ----------
+
+const BASE58_ALPHABET: &[u8; 58] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+
+/// Bitcoin-alphabet base58 decode, bounded to CID-sized inputs.
+pub fn base58_decode(s: &str) -> Result<Vec<u8>> {
+    if s.len() > 64 {
+        bail!("base58 input too long for a CID");
+    }
+    let mut out: Vec<u8> = Vec::new();
+    for c in s.bytes() {
+        let digit = BASE58_ALPHABET
+            .iter()
+            .position(|a| *a == c)
+            .ok_or_else(|| eyre!("invalid base58 character {:?}", c as char))?
+            as u32;
+        let mut carry = digit;
+        for byte in out.iter_mut().rev() {
+            let v = u32::from(*byte) * 58 + carry;
+            *byte = (v & 0xff) as u8;
+            carry = v >> 8;
+        }
+        while carry > 0 {
+            out.insert(0, (carry & 0xff) as u8);
+            carry >>= 8;
+        }
+    }
+    let leading = s.bytes().take_while(|c| *c == b'1').count();
+    let mut result = vec![0u8; leading];
+    result.extend(out);
+    Ok(result)
+}
+
+/// Bitcoin-alphabet base58 encode.
+pub fn base58_encode(raw: &[u8]) -> String {
+    let mut digits: Vec<u8> = Vec::new();
+    for byte in raw {
+        let mut carry = u32::from(*byte);
+        for d in digits.iter_mut() {
+            let v = u32::from(*d) * 256 + carry;
+            *d = (v % 58) as u8;
+            carry = v / 58;
+        }
+        while carry > 0 {
+            digits.push((carry % 58) as u8);
+            carry /= 58;
+        }
+    }
+    let mut s = String::new();
+    for _ in raw.iter().take_while(|b| **b == 0) {
+        s.push('1');
+    }
+    for d in digits.iter().rev() {
+        s.push(BASE58_ALPHABET[*d as usize] as char);
+    }
+    s
+}
+
+#[cfg(test)]
+mod cidv0_tests {
+    use super::{base58_decode, base58_encode, Cid};
+
+    /// Vectors from kubo: `ipfs cid format -b base16 -v 1 <Qm…>`.
+    #[test]
+    fn cidv0_text_round_trips_through_the_kubo_vectors() {
+        for (text, digest_hex) in [
+            (
+                "QmSgD2hjrA4jwTFP8GxR6zH9rc4GpG8CF7QF3xPzqycvxG",
+                "4071540068a12010c59a4defd817025565edf0e61a9ca9a270081ad8d02d8831",
+            ),
+            (
+                "QmWtvA69pfnBbkJvLS3TAJuevnKdb35NbrvTDuARQszAAv",
+                "7f218c635c3a4d09afb01fab06272cb69a139318cc9c92f8062dd8f896284a6b",
+            ),
+        ] {
+            let cid = Cid::parse_any(text).unwrap();
+            assert_eq!(cid.codec, 0x70);
+            assert_eq!(super::hex_lower(&cid.digest), digest_hex);
+            assert_eq!(cid.to_string_v0().unwrap(), text);
+            // The same CID in canonical v1 form parses back to the same value.
+            assert_eq!(
+                Cid::parse_canonical(&cid.to_string_canonical()).unwrap(),
+                cid
+            );
+        }
+    }
+
+    #[test]
+    fn base58_edge_cases() {
+        assert_eq!(base58_encode(&[]), "");
+        assert_eq!(base58_decode("").unwrap(), Vec::<u8>::new());
+        assert_eq!(base58_encode(&[0, 0, 1]), "112");
+        assert_eq!(base58_decode("112").unwrap(), vec![0, 0, 1]);
+        assert!(base58_decode("0OIl").is_err());
+        assert!(Cid::from_bytes_v0(&[0x12, 0x20]).is_err());
+        assert!(
+            Cid::from_bytes(&[0x12, 0x20]).is_err(),
+            "the strict CIDv1 parser stays strict"
+        );
     }
 }
 
@@ -310,6 +458,17 @@ fn decode_unixfs(body: &[u8]) -> Result<UnixFs> {
 }
 
 pub fn decode_pbnode(raw: &[u8]) -> Result<PbNode> {
+    decode_pbnode_with(raw, false)
+}
+
+/// `decode_pbnode` that also accepts CIDv0 link hashes (34-byte multihash
+/// form). Legacy Kleros lists link their item files this way; the skills
+/// registry's strict walk keeps using `decode_pbnode`.
+pub fn decode_pbnode_lenient(raw: &[u8]) -> Result<PbNode> {
+    decode_pbnode_with(raw, true)
+}
+
+fn decode_pbnode_with(raw: &[u8], allow_v0_links: bool) -> Result<PbNode> {
     let mut pos = 0usize;
     let mut links = Vec::new();
     let mut unixfs = None;
@@ -328,7 +487,7 @@ pub fn decode_pbnode(raw: &[u8]) -> Result<PbNode> {
             2 => {
                 // Per the dag-pb spec, DECODERS accept either PBNode field
                 // order (our encoder still emits Links-then-Data canonically).
-                links.push(decode_link(body)?);
+                links.push(decode_link(body, allow_v0_links)?);
             }
             1 => {
                 if unixfs.is_some() {
@@ -345,7 +504,7 @@ pub fn decode_pbnode(raw: &[u8]) -> Result<PbNode> {
     })
 }
 
-fn decode_link(raw: &[u8]) -> Result<PbLink> {
+fn decode_link(raw: &[u8], allow_v0: bool) -> Result<PbLink> {
     let mut pos = 0usize;
     let mut cid = None;
     let mut name = None;
@@ -365,9 +524,12 @@ fn decode_link(raw: &[u8]) -> Result<PbLink> {
             (1, 2) => {
                 let len = read_uvarint(raw, &mut pos)? as usize;
                 let end = pos.checked_add(len).ok_or_else(|| eyre!("overflow"))?;
-                cid = Some(Cid::from_bytes(
-                    raw.get(pos..end).ok_or_else(|| eyre!("link truncated"))?,
-                )?);
+                let cid_bytes = raw.get(pos..end).ok_or_else(|| eyre!("link truncated"))?;
+                cid = Some(if allow_v0 {
+                    Cid::from_bytes_any(cid_bytes)?
+                } else {
+                    Cid::from_bytes(cid_bytes)?
+                });
                 pos = end;
             }
             (2, 2) => {

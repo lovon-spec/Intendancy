@@ -1,0 +1,13 @@
+what: the Uniswap token-lists JSON schema, vendored verbatim; the token list
+      curate-export renders is validated against the checks it states (list
+      name pattern and length, positive chainId, address form, token name and
+      symbol length and whitespace, decimals range, version integers,
+      timestamp format, token count), see lgtcr::validate_token_list. The
+      test lgtcr::tests::schema_checks_match_the_vendored_schema reads this
+      file and fails when a pinned constant drifts from it.
+source: https://github.com/Uniswap/token-lists/blob/main/src/tokenlist.schema.json
+fetched: 2026-09-09 from raw.githubusercontent.com at main
+main at fetch time: 01705f94a307270b6c0fe5f55c7e66f7b92373cc (2026-03-10)
+last commit touching the file: 12d4cb2250a2b73ad21d45e4d161efb3c14213d0 (2025-10-24, "accept sol addresses (#993)")
+sha256: 3c33314b868c9134646924ad13335e65a6f549008dfcb2b9f3d52b48a91ef967
+license: MIT, Copyright (c) 2020 Uniswap; the notice is in LICENSE beside this file
